@@ -13,6 +13,11 @@ side-by-side Mario Kart team-match perspectives.
   capture, and it maps every video onto one shared master timeline.
 - **Per-video sync offsets.** Or, for a quick single fix, scrub any video and
   click its **Set Sync** button to align just that feed to the current moment.
+- **Shareable links.** The whole setup — videos, sync offsets, display names,
+  and which POV is focused — is encoded in the URL and updates as you go. Click
+  **⧉ Share** to copy a link that reopens the exact same synced setup, so you can
+  hand a match to teammates. (Encoded in the URL hash, so it works on static
+  hosting with no backend.)
 - A master-clock loop continuously corrects drift so the feeds stay aligned.
 - Requests the highest available quality per feed (YouTube ultimately picks
   based on player size, so the focused feed gets the best resolution).

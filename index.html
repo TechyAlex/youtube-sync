@@ -183,6 +183,7 @@
       <div class="sep"></div>
       <button id="syncWizard" title="Step through each video to line up the same frame">◎ Sync Setup</button>
       <button id="resync" title="Force re-sync all">↺ Resync</button>
+      <button id="shareBtn" title="Copy a shareable link to this exact setup">⧉ Share</button>
     </div>
   </header>
 
@@ -298,6 +299,45 @@ function toast(msg) {
   toastTimer = setTimeout(() => el.classList.remove('show'), 1600);
 }
 
+/* ---------------- Shareable-URL persistence ---------------- */
+function b64encode(str) {
+  return btoa(unescape(encodeURIComponent(str)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function b64decode(b64) {
+  b64 = b64.replace(/-/g, '+').replace(/_/g, '/');
+  return decodeURIComponent(escape(atob(b64)));
+}
+
+let restoring = false;   // suppress URL writes while rebuilding from a link
+function saveStateToUrl() {
+  if (restoring) return;
+  const st = {
+    v: 1,
+    vids: videos.map(v => ({ y: v.ytId, o: Math.round(v.offset * 100) / 100, n: v.displayName || '' })),
+    f: focusIndex,
+    a: audioIndex
+  };
+  try { history.replaceState(null, '', '#s=' + b64encode(JSON.stringify(st))); } catch (_) {}
+}
+function loadStateFromUrl() {
+  const m = (location.hash || '').match(/[#&]s=([^&]+)/);
+  if (!m) return null;
+  try { return JSON.parse(b64decode(m[1])); } catch (_) { return null; }
+}
+function restoreFromUrl() {
+  const st = loadStateFromUrl();
+  if (!st || !Array.isArray(st.vids) || !st.vids.length) return false;
+  restoring = true;
+  st.vids.forEach(x => addVideo(x.y, { offset: x.o || 0, displayName: x.n || '', silent: true }));
+  if (typeof st.f === 'number') focusIndex = Math.min(Math.max(0, st.f), videos.length - 1);
+  if (typeof st.a === 'number') audioIndex = st.a;
+  restoring = false;
+  relayout();
+  updateAudioButtons();
+  return true;
+}
+
 /* Best-effort request for maximum quality (YouTube ultimately decides from player size). */
 function requestBestQuality(v) {
   if (!v.ready) return;
@@ -341,7 +381,7 @@ function relayout() {
 }
 
 /* ---------------- Add / remove ---------------- */
-function addVideo(input) {
+function addVideo(input, opts = {}) {
   if (videos.length >= MAX_POVS) { toast('Max ' + MAX_POVS + ' POVs.'); return; }
   const ytId = parseVideoId(input);
   if (!ytId) { toast('Could not find a YouTube video ID in that.'); return; }
@@ -407,6 +447,15 @@ function addVideo(input) {
   };
   videos.push(vObj);
 
+  if (opts.offset != null) {
+    vObj.offset = opts.offset;
+    vObj.els.offset.textContent = 'sync: ' + fmtTime(vObj.offset);
+  }
+  if (opts.displayName) {
+    vObj.displayName = opts.displayName;
+    vObj.els.title.textContent = opts.displayName;
+  }
+
   vObj.els.switchBtn.addEventListener('click', (e) => { e.stopPropagation(); setFocus(videos.indexOf(vObj)); });
   vObj.els.renameBtn.addEventListener('click', (e) => { e.stopPropagation(); renameVideo(vObj); });
   vObj.els.audioBtn.addEventListener('click', (e) => { e.stopPropagation(); setAudio(videos.indexOf(vObj)); });
@@ -437,6 +486,7 @@ function addVideo(input) {
 
   document.getElementById('urlInput').value = '';
   updateAudioButtons();
+  if (!opts.silent) saveStateToUrl();
 }
 
 function removeVideo(vObj) {
@@ -455,6 +505,7 @@ function removeVideo(vObj) {
   relayout();
   applyAudioState();
   updateAudioButtons();
+  saveStateToUrl();
 }
 
 /* ---------------- Sync core ---------------- */
@@ -472,6 +523,7 @@ function setSyncPoint(v) {
   v.offset = cur - masterTime;   // so offset + masterTime == cur right now
   v.els.offset.textContent = 'sync: ' + fmtTime(cur);
   toast('Sync point set for #' + (videos.indexOf(v) + 1) + ' at ' + fmtTime(cur));
+  saveStateToUrl();
 }
 
 function leader() { return videos[focusIndex] || videos[0] || null; }
@@ -553,6 +605,7 @@ function setFocus(i) {
   applyAudioState();
   updateAudioButtons();
   toast('Focus: #' + (i + 1) + ' — ' + nameOf(videos[i]));
+  saveStateToUrl();
 }
 
 function setAudio(i) {         // per-cell 🔊 lets you keep audio on a non-focused POV
@@ -562,6 +615,7 @@ function setAudio(i) {         // per-cell 🔊 lets you keep audio on a non-foc
   applyAudioState();
   updateAudioButtons();
   toast('Audio: #' + (i + 1));
+  saveStateToUrl();
 }
 
 function muteAll() {
@@ -570,6 +624,7 @@ function muteAll() {
   applyAudioState();
   updateAudioButtons();
   toast('All muted');
+  saveStateToUrl();
 }
 
 function applyAudioState() {
@@ -595,6 +650,7 @@ function renameVideo(v) {
   v.displayName = name.trim();
   v.els.title.textContent = nameOf(v);
   if (v.els.title.title !== undefined) v.els.title.title = nameOf(v);
+  saveStateToUrl();
 }
 
 /* ---------------- Guided sync wizard ---------------- */
@@ -682,6 +738,7 @@ function finishWizard() {
   videos.forEach(v => seekVideoToMaster(v));
   document.getElementById('masterTime').textContent = fmtTime(masterTime);
   toast('Synced ' + wizardCaptures.filter(c => c != null).length + ' videos. Press Space to play.');
+  saveStateToUrl();
 }
 
 function cancelWizard() { closeWizard(); toast('Sync setup cancelled'); }
@@ -702,6 +759,13 @@ document.getElementById('playPause').addEventListener('click', togglePlay);
 document.getElementById('back5').addEventListener('click', () => skip(-5));
 document.getElementById('fwd5').addEventListener('click', () => skip(5));
 document.getElementById('resync').addEventListener('click', resyncAll);
+
+document.getElementById('shareBtn').addEventListener('click', async () => {
+  if (videos.length === 0) { toast('Add some videos first.'); return; }
+  saveStateToUrl();
+  try { await navigator.clipboard.writeText(location.href); toast('Share link copied to clipboard'); }
+  catch (_) { toast('Copy the link from your address bar'); }
+});
 
 document.getElementById('syncWizard').addEventListener('click', () => wizardActive ? cancelWizard() : startWizard());
 document.getElementById('wizM1').addEventListener('click', () => wizardNudge(-1));
@@ -740,6 +804,9 @@ document.addEventListener('keydown', (e) => {
       if (/^[1-6]$/.test(e.key)) setFocus(parseInt(e.key, 10) - 1);
   }
 });
+
+/* Rebuild a shared setup from the URL, if present. */
+restoreFromUrl();
 </script>
 </body>
 </html>

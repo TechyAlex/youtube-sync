@@ -8,8 +8,11 @@ side-by-side Mario Kart team-match perspectives.
   into focus.
 - **Audio follows focus** by default; each cell's 🔊 button lets you keep audio
   on a non-focused POV. `0` mutes all.
-- **Per-video sync offsets.** Scrub each video to the same shared moment (e.g.
-  the race start), click **Set Sync**, and all videos share one master timeline.
+- **Guided Sync Setup.** Click **◎ Sync Setup** to walk through each video one at
+  a time — line up the same frame in each (with ±1s / ±0.1s nudge controls),
+  capture, and it maps every video onto one shared master timeline.
+- **Per-video sync offsets.** Or, for a quick single fix, scrub any video and
+  click its **Set Sync** button to align just that feed to the current moment.
 - A master-clock loop continuously corrects drift so the feeds stay aligned.
 - Requests the highest available quality per feed (YouTube ultimately picks
   based on player size, so the focused feed gets the best resolution).

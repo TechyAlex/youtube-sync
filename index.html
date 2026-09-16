@@ -93,14 +93,12 @@
   }
   .cell.focused { grid-column: 1; grid-row: 1 / -1; }
   .cell.side { grid-column: 2; }
-  .cell.side { cursor: pointer; }
-  .cell.side:hover { border-color: var(--accent-2); }
   .cell.audio { box-shadow: inset 0 0 0 2px var(--accent-2); }
 
   .cell-video { position: relative; width: 100%; background: #000; flex: 1; min-height: 0; }
   .cell.focused .cell-video { aspect-ratio: auto; }        /* fill available stage height */
   .cell.side .cell-video { aspect-ratio: 16 / 9; flex: none; }
-  .cell-video iframe, .cell-video > div { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .cell-video iframe, .cell-video .player-host { position: absolute; inset: 0; width: 100%; height: 100%; }
 
   /* Transparent catcher over sidebar players so a click focuses (instead of hitting the iframe). */
   .focus-catch { position: absolute; inset: 0; z-index: 4; }
@@ -126,12 +124,39 @@
     background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px;
   }
   .cell-bar button.audio-btn.active { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
+  .cell-bar button.switch-btn { background: var(--accent-2); border-color: var(--accent-2); color: #fff; flex: 1; }
+  .cell-bar button.switch-btn:hover { background: #6aa0ff; }
+  /* Focused cell: quick per-video sync + audio; no "switch" (already in focus). */
+  .cell.focused .switch-btn { display: none; }
+  /* Sidebar cells: switch button only — no per-item sync / audio controls. */
+  .cell.side .setsync-btn, .cell.side .audio-btn { display: none; }
 
   .help {
     padding: 10px 14px; background: var(--panel); border-top: 1px solid var(--border);
     color: var(--muted); font-size: 12px; display: flex; gap: 16px; flex-wrap: wrap;
   }
   .help kbd { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-size: 11px; color: var(--text); }
+
+  .wizard {
+    position: fixed; top: 64px; left: 50%; transform: translateX(-50%);
+    z-index: 60; display: none; max-width: calc(100vw - 24px);
+  }
+  .wizard.active { display: block; }
+  .wizard-inner {
+    background: var(--panel-2); border: 1px solid var(--accent-2);
+    border-radius: var(--radius); padding: 12px 14px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  }
+  .wizard-head { margin-bottom: 10px; }
+  .wizard-step { font-weight: 700; color: var(--accent-2); margin-right: 8px; }
+  .wizard-sub { color: var(--muted); font-size: 13px; }
+  .wizard-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .wizard-time {
+    font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 600;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; min-width: 92px; text-align: center;
+  }
+  .wizard-gap { flex: 1; min-width: 8px; }
 
   .toast {
     position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%);
@@ -156,6 +181,7 @@
       <button id="playPause" title="Play/Pause (Space)">▶ Play</button>
       <button id="fwd5" title="Forward 5s (→)">5s »</button>
       <div class="sep"></div>
+      <button id="syncWizard" title="Step through each video to line up the same frame">◎ Sync Setup</button>
       <button id="resync" title="Force re-sync all">↺ Resync</button>
     </div>
   </header>
@@ -164,7 +190,7 @@
     <div id="grid" class="empty">
       <div class="placeholder">
         <p style="font-size:15px;color:var(--text)">Add up to 6 YouTube POVs to watch them synced.</p>
-        <p>The first video sits in the main view; the rest appear as miniplayers on the right. <strong>Click a miniplayer to swap it into focus.</strong></p>
+        <p>The first video sits in the main view; the rest appear as miniplayers on the right. Use each miniplayer's <strong>Switch to this POV</strong> button (or keys <kbd>1</kbd>–<kbd>6</kbd>) to bring it into focus.</p>
         <p>Scrub each video to the same shared moment (e.g. the race start), then click <strong>Set Sync</strong> so they share one master timeline.</p>
         <p style="margin-top:14px">
           <kbd>Space</kbd> play/pause &nbsp; <kbd>←</kbd>/<kbd>→</kbd> ±5s &nbsp; <kbd>1</kbd>–<kbd>6</kbd> focus
@@ -180,6 +206,27 @@
     <span><kbd>1</kbd>–<kbd>6</kbd> Focus that POV (+ its audio)</span>
     <span><kbd>0</kbd> Mute all</span>
     <span><kbd>R</kbd> Resync</span>
+  </div>
+
+  <div class="wizard" id="wizard">
+    <div class="wizard-inner">
+      <div class="wizard-head">
+        <span class="wizard-step" id="wizStep">Sync Setup</span>
+        <span class="wizard-sub" id="wizSub">Scrub this video to the shared moment, then capture.</span>
+      </div>
+      <div class="wizard-controls">
+        <span class="wizard-time" id="wizTime">0:00.00</span>
+        <button id="wizM1">« 1s</button>
+        <button id="wizMp1">« .1s</button>
+        <button id="wizPlayPause">▶ / ❚❚</button>
+        <button id="wizPp1">.1s »</button>
+        <button id="wizP1">1s »</button>
+        <span class="wizard-gap"></span>
+        <button id="wizBack">◀ Back</button>
+        <button id="wizNext" class="primary">Capture &amp; Next ⏎</button>
+        <button id="wizCancel">Cancel (Esc)</button>
+      </div>
+    </div>
   </div>
 
   <div class="toast" id="toast"></div>
@@ -232,6 +279,14 @@ function fmtTime(t) {
   const s = Math.floor(t % 60);
   const d = Math.floor((t * 10) % 10);
   return (neg ? '-' : '') + m + ':' + String(s).padStart(2, '0') + '.' + d;
+}
+
+function fmtTime2(t) {
+  const neg = t < 0; t = Math.abs(t);
+  const m = Math.floor(t / 60);
+  const s = Math.floor(t % 60);
+  const c = Math.floor((t * 100) % 100);
+  return (neg ? '-' : '') + m + ':' + String(s).padStart(2, '0') + '.' + String(c).padStart(2, '0');
 }
 
 let toastTimer;
@@ -313,6 +368,7 @@ function addVideo(input) {
   const playerHost = document.createElement('div');
   const playerHostId = 'player-' + id;
   playerHost.id = playerHostId;
+  playerHost.className = 'player-host';
 
   videoWrap.appendChild(playerHost);
   videoWrap.appendChild(focusCatch);
@@ -324,6 +380,8 @@ function addVideo(input) {
   bar.innerHTML = `
     <span class="title">Loading…</span>
     <span class="offset">sync: —</span>
+    <button class="switch-btn" title="Switch the main view to this POV">Switch to this POV</button>
+    <button class="rename-btn" title="Set a display name for this POV">✎</button>
     <button class="audio-btn" title="Make this the only audio">🔊</button>
     <button class="setsync-btn" title="Set this moment as the shared sync point">Set Sync</button>
     <button class="remove-btn" title="Remove">✕</button>
@@ -334,12 +392,14 @@ function addVideo(input) {
   grid.appendChild(cell);
 
   const vObj = {
-    id, ytId, player: null, ready: false, offset: 0, title: 'Video',
+    id, ytId, player: null, ready: false, offset: 0, title: 'Video', displayName: '',
     el: cell,
     els: {
       badge, audioTag, focusCatch,
       title: bar.querySelector('.title'),
       offset: bar.querySelector('.offset'),
+      switchBtn: bar.querySelector('.switch-btn'),
+      renameBtn: bar.querySelector('.rename-btn'),
       audioBtn: bar.querySelector('.audio-btn'),
       setSyncBtn: bar.querySelector('.setsync-btn'),
       removeBtn: bar.querySelector('.remove-btn'),
@@ -347,7 +407,8 @@ function addVideo(input) {
   };
   videos.push(vObj);
 
-  focusCatch.addEventListener('click', () => setFocus(videos.indexOf(vObj)));
+  vObj.els.switchBtn.addEventListener('click', (e) => { e.stopPropagation(); setFocus(videos.indexOf(vObj)); });
+  vObj.els.renameBtn.addEventListener('click', (e) => { e.stopPropagation(); renameVideo(vObj); });
   vObj.els.audioBtn.addEventListener('click', (e) => { e.stopPropagation(); setAudio(videos.indexOf(vObj)); });
   vObj.els.setSyncBtn.addEventListener('click', (e) => { e.stopPropagation(); setSyncPoint(vObj); });
   vObj.els.removeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeVideo(vObj); });
@@ -361,7 +422,8 @@ function addVideo(input) {
       events: {
         onReady: (e) => {
           vObj.ready = true;
-          try { vObj.title = e.target.getVideoData().title || 'Video'; vObj.els.title.textContent = vObj.title; } catch (_) {}
+          try { vObj.title = e.target.getVideoData().title || 'Video'; } catch (_) {}
+          vObj.els.title.textContent = nameOf(vObj);
           requestBestQuality(vObj);
           applyAudioState();
           seekVideoToMaster(vObj);
@@ -490,7 +552,7 @@ function setFocus(i) {
   relayout();
   applyAudioState();
   updateAudioButtons();
-  toast('Focus: #' + (i + 1) + (videos[i].title ? ' — ' + videos[i].title : ''));
+  toast('Focus: #' + (i + 1) + ' — ' + nameOf(videos[i]));
 }
 
 function setAudio(i) {         // per-cell 🔊 lets you keep audio on a non-focused POV
@@ -523,6 +585,114 @@ function updateAudioButtons() {
   videos.forEach((v, i) => v.els.audioBtn.classList.toggle('active', i === audioIndex));
 }
 
+/* ---------------- Display names ---------------- */
+function nameOf(v) { return (v.displayName && v.displayName.trim()) || v.title || 'Video'; }
+
+function renameVideo(v) {
+  const current = v.displayName || '';
+  const name = window.prompt('Display name for this POV (leave blank to use the YouTube title):', current);
+  if (name === null) return;            // cancelled
+  v.displayName = name.trim();
+  v.els.title.textContent = nameOf(v);
+  if (v.els.title.title !== undefined) v.els.title.title = nameOf(v);
+}
+
+/* ---------------- Guided sync wizard ---------------- */
+let wizardActive = false;
+let wizardList = [];      // snapshot of videos at wizard start
+let wizardStep = 0;
+let wizardCaptures = [];  // captured currentTime per wizardList entry
+let wizardTimer = null;
+
+function startWizard() {
+  const ready = videos.filter(v => v.ready);
+  if (ready.length === 0) { toast('Add at least one video first.'); return; }
+  pauseAll();
+  wizardActive = true;
+  wizardList = videos.slice();
+  wizardCaptures = new Array(wizardList.length).fill(null);
+  wizardStep = 0;
+  document.getElementById('wizard').classList.add('active');
+  showWizardStep();
+  wizardTimer = setInterval(updateWizardTime, 100);
+}
+
+function showWizardStep() {
+  const v = wizardList[wizardStep];
+  if (!v) { finishWizard(); return; }
+  setFocus(videos.indexOf(v));           // bring the current video into the big view
+  const n = wizardList.length;
+  document.getElementById('wizStep').textContent = 'Step ' + (wizardStep + 1) + ' / ' + n;
+  document.getElementById('wizSub').textContent =
+    'Line up “' + nameOf(v) + '” to the shared moment, then Capture. Play/scrub and nudge for a precise frame.';
+  const nextBtn = document.getElementById('wizNext');
+  nextBtn.innerHTML = (wizardStep === n - 1) ? 'Finish ⏎' : 'Capture &amp; Next ⏎';
+  document.getElementById('wizBack').disabled = wizardStep === 0;
+  updateWizardTime();
+}
+
+function updateWizardTime() {
+  const v = wizardList[wizardStep];
+  if (!v || !v.ready) return;
+  let cur = 0;
+  try { cur = v.player.getCurrentTime(); } catch (_) {}
+  document.getElementById('wizTime').textContent = fmtTime2(cur);
+}
+
+function wizardNudge(sec) {
+  const v = wizardList[wizardStep];
+  if (!v || !v.ready) return;
+  let cur = 0;
+  try { cur = v.player.getCurrentTime(); } catch (_) {}
+  try { v.player.seekTo(Math.max(0, cur + sec), true); } catch (_) {}
+  setTimeout(updateWizardTime, 60);
+}
+
+function wizardTogglePlay() {
+  const v = wizardList[wizardStep];
+  if (!v || !v.ready) return;
+  let st = -1;
+  try { st = v.player.getPlayerState(); } catch (_) {}
+  try { (st === YT.PlayerState.PLAYING) ? v.player.pauseVideo() : v.player.playVideo(); } catch (_) {}
+}
+
+function wizardCaptureNext() {
+  const v = wizardList[wizardStep];
+  if (!v || !v.ready) return;
+  try { v.player.pauseVideo(); wizardCaptures[wizardStep] = v.player.getCurrentTime(); } catch (_) {}
+  if (wizardStep < wizardList.length - 1) { wizardStep++; showWizardStep(); }
+  else finishWizard();
+}
+
+function wizardBack() {
+  if (wizardStep === 0) return;
+  wizardStep--;
+  showWizardStep();
+}
+
+function finishWizard() {
+  // Map every captured frame to master time 0.
+  wizardList.forEach((v, i) => {
+    if (wizardCaptures[i] == null) return;
+    v.offset = wizardCaptures[i];
+    v.els.offset.textContent = 'sync: ' + fmtTime(v.offset);
+  });
+  masterTime = 0;
+  closeWizard();
+  videos.forEach(v => seekVideoToMaster(v));
+  document.getElementById('masterTime').textContent = fmtTime(masterTime);
+  toast('Synced ' + wizardCaptures.filter(c => c != null).length + ' videos. Press Space to play.');
+}
+
+function cancelWizard() { closeWizard(); toast('Sync setup cancelled'); }
+
+function closeWizard() {
+  wizardActive = false;
+  clearInterval(wizardTimer);
+  wizardTimer = null;
+  document.getElementById('wizard').classList.remove('active');
+}
+
 /* ---------------- Wiring ---------------- */
 const urlInput = document.getElementById('urlInput');
 document.getElementById('addBtn').addEventListener('click', () => addVideo(urlInput.value));
@@ -533,8 +703,32 @@ document.getElementById('back5').addEventListener('click', () => skip(-5));
 document.getElementById('fwd5').addEventListener('click', () => skip(5));
 document.getElementById('resync').addEventListener('click', resyncAll);
 
+document.getElementById('syncWizard').addEventListener('click', () => wizardActive ? cancelWizard() : startWizard());
+document.getElementById('wizM1').addEventListener('click', () => wizardNudge(-1));
+document.getElementById('wizMp1').addEventListener('click', () => wizardNudge(-0.1));
+document.getElementById('wizPp1').addEventListener('click', () => wizardNudge(0.1));
+document.getElementById('wizP1').addEventListener('click', () => wizardNudge(1));
+document.getElementById('wizPlayPause').addEventListener('click', wizardTogglePlay);
+document.getElementById('wizNext').addEventListener('click', wizardCaptureNext);
+document.getElementById('wizBack').addEventListener('click', wizardBack);
+document.getElementById('wizCancel').addEventListener('click', cancelWizard);
+
 document.addEventListener('keydown', (e) => {
   if (e.target === urlInput) return;
+
+  // In the sync wizard, arrows nudge the current video and Enter captures.
+  if (wizardActive) {
+    const nudge = e.shiftKey ? 0.1 : 1;
+    switch (e.key) {
+      case 'ArrowLeft': e.preventDefault(); wizardNudge(-nudge); break;
+      case 'ArrowRight': e.preventDefault(); wizardNudge(nudge); break;
+      case ' ': e.preventDefault(); wizardTogglePlay(); break;
+      case 'Enter': e.preventDefault(); wizardCaptureNext(); break;
+      case 'Escape': e.preventDefault(); cancelWizard(); break;
+    }
+    return;
+  }
+
   const step = e.shiftKey ? 1 : 5;
   switch (e.key) {
     case ' ': e.preventDefault(); togglePlay(); break;

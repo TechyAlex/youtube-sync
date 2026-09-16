@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MultiPOV — Synced YouTube Viewer</title>
+<style>
+  :root {
+    --bg: #0e0f13;
+    --panel: #16181f;
+    --panel-2: #1d2029;
+    --border: #2a2e3a;
+    --text: #e7e9ee;
+    --muted: #9aa0ad;
+    --accent: #ff4d4d;
+    --accent-2: #4d8dff;
+    --good: #34c759;
+    --radius: 10px;
+    --side-w: 340px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .3px; white-space: nowrap; }
+  header h1 .accent { color: var(--accent); }
+
+  .add-row { display: flex; gap: 8px; flex: 1; min-width: 260px; }
+  input[type="text"] {
+    flex: 1; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    padding: 8px 10px; border-radius: var(--radius); outline: none; min-width: 120px;
+  }
+  input[type="text"]:focus { border-color: var(--accent-2); }
+
+  button {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    padding: 8px 12px; border-radius: var(--radius); cursor: pointer; font-size: 13px;
+    white-space: nowrap; transition: background .12s, border-color .12s;
+  }
+  button:hover { background: #262a35; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: #ff6161; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+
+  .transport { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .transport .sep { width: 1px; height: 24px; background: var(--border); margin: 0 4px; }
+  .master-time {
+    font-variant-numeric: tabular-nums; font-size: 14px; color: var(--muted);
+    min-width: 108px; text-align: center; padding: 6px 8px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
+  .status-dot.playing { background: var(--good); }
+
+  main { flex: 1; overflow: hidden; padding: 12px; }
+
+  /* Grid: focused cell spans the whole left column; sidebar cells stack in the right column. */
+  #grid {
+    display: grid;
+    gap: 12px;
+    height: 100%;
+    grid-template-columns: 1fr var(--side-w);
+    grid-template-rows: repeat(1, 1fr);
+  }
+  #grid.solo-col { grid-template-columns: 1fr; }
+  #grid.empty { display: flex; align-items: center; justify-content: center; }
+
+  .placeholder { color: var(--muted); text-align: center; max-width: 480px; }
+  .placeholder kbd { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-size: 12px; }
+
+  .cell {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  }
+  .cell.focused { grid-column: 1; grid-row: 1 / -1; }
+  .cell.side { grid-column: 2; }
+  .cell.side { cursor: pointer; }
+  .cell.side:hover { border-color: var(--accent-2); }
+  .cell.audio { box-shadow: inset 0 0 0 2px var(--accent-2); }
+
+  .cell-video { position: relative; width: 100%; background: #000; flex: 1; min-height: 0; }
+  .cell.focused .cell-video { aspect-ratio: auto; }        /* fill available stage height */
+  .cell.side .cell-video { aspect-ratio: 16 / 9; flex: none; }
+  .cell-video iframe, .cell-video > div { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* Transparent catcher over sidebar players so a click focuses (instead of hitting the iframe). */
+  .focus-catch { position: absolute; inset: 0; z-index: 4; }
+  .cell.focused .focus-catch { display: none; }
+
+  .cell-badge {
+    position: absolute; top: 8px; left: 8px; z-index: 5;
+    background: rgba(0,0,0,.65); border-radius: 6px; padding: 2px 8px;
+    font-size: 12px; font-weight: 600; pointer-events: none;
+  }
+  .cell-audio-tag {
+    position: absolute; top: 8px; right: 8px; z-index: 5;
+    background: var(--accent-2); border-radius: 6px; padding: 2px 8px;
+    font-size: 11px; font-weight: 700; display: none;
+  }
+  .cell.audio .cell-audio-tag { display: block; }
+
+  .cell-bar { display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+  .cell-bar .title { flex: 1; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 50px; }
+  .cell-bar button { padding: 5px 8px; font-size: 12px; }
+  .cell-bar .offset {
+    font-variant-numeric: tabular-nums; font-size: 11px; color: var(--muted);
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px;
+  }
+  .cell-bar button.audio-btn.active { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
+
+  .help {
+    padding: 10px 14px; background: var(--panel); border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 12px; display: flex; gap: 16px; flex-wrap: wrap;
+  }
+  .help kbd { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-size: 11px; color: var(--text); }
+
+  .toast {
+    position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%);
+    background: var(--panel-2); border: 1px solid var(--border);
+    padding: 10px 16px; border-radius: var(--radius); z-index: 50;
+    opacity: 0; transition: opacity .2s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Multi<span class="accent">POV</span></h1>
+    <div class="add-row">
+      <input id="urlInput" type="text" placeholder="Paste a YouTube URL or ID, then Enter…" autocomplete="off" spellcheck="false" />
+      <button class="primary" id="addBtn">Add</button>
+    </div>
+    <div class="transport">
+      <span class="master-time"><span class="status-dot" id="statusDot"></span><span id="masterTime">0:00.0</span></span>
+      <div class="sep"></div>
+      <button id="back5" title="Back 5s (←)">« 5s</button>
+      <button id="playPause" title="Play/Pause (Space)">▶ Play</button>
+      <button id="fwd5" title="Forward 5s (→)">5s »</button>
+      <div class="sep"></div>
+      <button id="resync" title="Force re-sync all">↺ Resync</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="grid" class="empty">
+      <div class="placeholder">
+        <p style="font-size:15px;color:var(--text)">Add up to 6 YouTube POVs to watch them synced.</p>
+        <p>The first video sits in the main view; the rest appear as miniplayers on the right. <strong>Click a miniplayer to swap it into focus.</strong></p>
+        <p>Scrub each video to the same shared moment (e.g. the race start), then click <strong>Set Sync</strong> so they share one master timeline.</p>
+        <p style="margin-top:14px">
+          <kbd>Space</kbd> play/pause &nbsp; <kbd>←</kbd>/<kbd>→</kbd> ±5s &nbsp; <kbd>1</kbd>–<kbd>6</kbd> focus
+        </p>
+      </div>
+    </div>
+  </main>
+
+  <div class="help">
+    <span><kbd>Space</kbd> Play / Pause</span>
+    <span><kbd>←</kbd> <kbd>→</kbd> Skip ±5s</span>
+    <span><kbd>Shift</kbd>+<kbd>←</kbd>/<kbd>→</kbd> ±1s</span>
+    <span><kbd>1</kbd>–<kbd>6</kbd> Focus that POV (+ its audio)</span>
+    <span><kbd>0</kbd> Mute all</span>
+    <span><kbd>R</kbd> Resync</span>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+/* ---------------- YouTube IFrame API bootstrap ---------------- */
+let apiReady = false;
+const pendingInit = [];
+window.onYouTubeIframeAPIReady = function () {
+  apiReady = true;
+  pendingInit.splice(0).forEach(fn => fn());
+};
+(function loadApi() {
+  const tag = document.createElement('script');
+  tag.src = 'https://www.youtube.com/iframe_api';
+  document.head.appendChild(tag);
+})();
+
+/* ---------------- State ---------------- */
+const MAX_POVS = 6;
+const videos = [];        // { id, ytId, player, ready, offset, title, el, els }
+let nextId = 1;
+let masterTime = 0;       // seconds since the shared sync point
+let isPlaying = false;
+let focusIndex = 0;       // index of the big/leader video
+let audioIndex = 0;       // index of the audible video (defaults to focus)
+const DRIFT_THRESHOLD = 0.25;
+let lastTick = performance.now();
+
+/* ---------------- Helpers ---------------- */
+function parseVideoId(input) {
+  input = input.trim();
+  if (!input) return null;
+  if (/^[a-zA-Z0-9_-]{11}$/.test(input)) return input;
+  try {
+    const url = new URL(input.includes('://') ? input : 'https://' + input);
+    if (url.hostname.includes('youtu.be')) return url.pathname.slice(1).split('/')[0] || null;
+    if (url.searchParams.get('v')) return url.searchParams.get('v');
+    const parts = url.pathname.split('/').filter(Boolean);
+    const marker = parts.findIndex(p => ['embed', 'live', 'shorts', 'v'].includes(p));
+    if (marker !== -1 && parts[marker + 1]) return parts[marker + 1];
+  } catch (e) {}
+  const m = input.match(/[a-zA-Z0-9_-]{11}/);
+  return m ? m[0] : null;
+}
+
+function fmtTime(t) {
+  const neg = t < 0; t = Math.abs(t);
+  const m = Math.floor(t / 60);
+  const s = Math.floor(t % 60);
+  const d = Math.floor((t * 10) % 10);
+  return (neg ? '-' : '') + m + ':' + String(s).padStart(2, '0') + '.' + d;
+}
+
+let toastTimer;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 1600);
+}
+
+/* Best-effort request for maximum quality (YouTube ultimately decides from player size). */
+function requestBestQuality(v) {
+  if (!v.ready) return;
+  try {
+    const levels = v.player.getAvailableQualityLevels && v.player.getAvailableQualityLevels();
+    const best = (levels && levels.length) ? levels[0] : 'highres';
+    if (v.player.setPlaybackQualityRange) v.player.setPlaybackQualityRange(best, best);
+    if (v.player.setPlaybackQuality) v.player.setPlaybackQuality(best);
+  } catch (_) {}
+}
+
+/* ---------------- Layout ---------------- */
+function relayout() {
+  const grid = document.getElementById('grid');
+  const n = videos.length;
+  grid.classList.toggle('empty', n === 0);
+  if (n === 0) return;
+
+  if (focusIndex >= n) focusIndex = 0;
+  const sideCount = n - 1;
+  grid.classList.toggle('solo-col', sideCount === 0);
+  grid.style.gridTemplateRows = 'repeat(' + Math.max(1, sideCount) + ', 1fr)';
+
+  let sideRow = 0;
+  videos.forEach((v, i) => {
+    const focused = i === focusIndex;
+    v.el.classList.toggle('focused', focused);
+    v.el.classList.toggle('side', !focused);
+    v.el.style.gridColumn = '';
+    v.el.style.gridRow = '';
+    if (!focused) {
+      sideRow += 1;
+      v.el.style.gridColumn = '2';
+      v.el.style.gridRow = String(sideRow);
+    }
+    v.el.classList.toggle('audio', i === audioIndex);
+    v.els.badge.textContent = '#' + (i + 1) + (focused ? ' • FOCUS' : '');
+  });
+  // Focused player just got bigger — nudge it to re-pick a higher quality.
+  requestBestQuality(videos[focusIndex]);
+}
+
+/* ---------------- Add / remove ---------------- */
+function addVideo(input) {
+  if (videos.length >= MAX_POVS) { toast('Max ' + MAX_POVS + ' POVs.'); return; }
+  const ytId = parseVideoId(input);
+  if (!ytId) { toast('Could not find a YouTube video ID in that.'); return; }
+
+  const id = nextId++;
+  const grid = document.getElementById('grid');
+  if (videos.length === 0) grid.innerHTML = '';
+
+  const cell = document.createElement('div');
+  cell.className = 'cell';
+  cell.dataset.id = id;
+
+  const videoWrap = document.createElement('div');
+  videoWrap.className = 'cell-video';
+
+  const badge = document.createElement('div');
+  badge.className = 'cell-badge';
+  const audioTag = document.createElement('div');
+  audioTag.className = 'cell-audio-tag';
+  audioTag.textContent = '🔊 AUDIO';
+  const focusCatch = document.createElement('div');
+  focusCatch.className = 'focus-catch';
+
+  const playerHost = document.createElement('div');
+  const playerHostId = 'player-' + id;
+  playerHost.id = playerHostId;
+
+  videoWrap.appendChild(playerHost);
+  videoWrap.appendChild(focusCatch);
+  videoWrap.appendChild(badge);
+  videoWrap.appendChild(audioTag);
+
+  const bar = document.createElement('div');
+  bar.className = 'cell-bar';
+  bar.innerHTML = `
+    <span class="title">Loading…</span>
+    <span class="offset">sync: —</span>
+    <button class="audio-btn" title="Make this the only audio">🔊</button>
+    <button class="setsync-btn" title="Set this moment as the shared sync point">Set Sync</button>
+    <button class="remove-btn" title="Remove">✕</button>
+  `;
+
+  cell.appendChild(videoWrap);
+  cell.appendChild(bar);
+  grid.appendChild(cell);
+
+  const vObj = {
+    id, ytId, player: null, ready: false, offset: 0, title: 'Video',
+    el: cell,
+    els: {
+      badge, audioTag, focusCatch,
+      title: bar.querySelector('.title'),
+      offset: bar.querySelector('.offset'),
+      audioBtn: bar.querySelector('.audio-btn'),
+      setSyncBtn: bar.querySelector('.setsync-btn'),
+      removeBtn: bar.querySelector('.remove-btn'),
+    }
+  };
+  videos.push(vObj);
+
+  focusCatch.addEventListener('click', () => setFocus(videos.indexOf(vObj)));
+  vObj.els.audioBtn.addEventListener('click', (e) => { e.stopPropagation(); setAudio(videos.indexOf(vObj)); });
+  vObj.els.setSyncBtn.addEventListener('click', (e) => { e.stopPropagation(); setSyncPoint(vObj); });
+  vObj.els.removeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeVideo(vObj); });
+
+  relayout();
+
+  const init = () => {
+    vObj.player = new YT.Player(playerHostId, {
+      videoId: ytId,
+      playerVars: { controls: 1, disablekb: 1, rel: 0, modestbranding: 1, playsinline: 1 },
+      events: {
+        onReady: (e) => {
+          vObj.ready = true;
+          try { vObj.title = e.target.getVideoData().title || 'Video'; vObj.els.title.textContent = vObj.title; } catch (_) {}
+          requestBestQuality(vObj);
+          applyAudioState();
+          seekVideoToMaster(vObj);
+        },
+        onPlaybackQualityChange: () => requestBestQuality(vObj),
+        onStateChange: (e) => onPlayerStateChange(vObj, e),
+      }
+    });
+  };
+  if (apiReady) init(); else pendingInit.push(init);
+
+  document.getElementById('urlInput').value = '';
+  updateAudioButtons();
+}
+
+function removeVideo(vObj) {
+  const i = videos.indexOf(vObj);
+  if (i === -1) return;
+  try { vObj.player && vObj.player.destroy(); } catch (_) {}
+  vObj.el.remove();
+  videos.splice(i, 1);
+  if (focusIndex >= videos.length) focusIndex = Math.max(0, videos.length - 1);
+  if (audioIndex >= videos.length) audioIndex = Math.max(0, videos.length - 1);
+  if (videos.length === 0) {
+    document.getElementById('grid').innerHTML =
+      '<div class="placeholder"><p style="font-size:15px;color:var(--text)">All videos removed. Paste a YouTube URL above to start again.</p></div>';
+    document.getElementById('grid').classList.remove('solo-col');
+  }
+  relayout();
+  applyAudioState();
+  updateAudioButtons();
+}
+
+/* ---------------- Sync core ---------------- */
+// offset = video's own currentTime at the shared sync moment.
+// desired position at master time T  =  offset + T
+function seekVideoToMaster(v, allowAhead = true) {
+  if (!v.ready) return;
+  try { v.player.seekTo(Math.max(0, v.offset + masterTime), allowAhead); } catch (_) {}
+}
+
+function setSyncPoint(v) {
+  if (!v.ready) return;
+  let cur = 0;
+  try { cur = v.player.getCurrentTime(); } catch (_) {}
+  v.offset = cur - masterTime;   // so offset + masterTime == cur right now
+  v.els.offset.textContent = 'sync: ' + fmtTime(cur);
+  toast('Sync point set for #' + (videos.indexOf(v) + 1) + ' at ' + fmtTime(cur));
+}
+
+function leader() { return videos[focusIndex] || videos[0] || null; }
+
+function tick() {
+  const now = performance.now();
+  const dt = (now - lastTick) / 1000;
+  lastTick = now;
+
+  const lead = leader();
+  if (isPlaying && lead && lead.ready) {
+    let leadState = -1;
+    try { leadState = lead.player.getPlayerState(); } catch (_) {}
+    if (leadState === YT.PlayerState.PLAYING) {
+      try { masterTime = lead.player.getCurrentTime() - lead.offset; } catch (_) {}
+    } else {
+      masterTime += dt;
+      try { lead.player.playVideo(); } catch (_) {}
+    }
+    videos.forEach(v => {
+      if (v === lead || !v.ready) return;
+      let cur = 0, st = -1;
+      try { cur = v.player.getCurrentTime(); st = v.player.getPlayerState(); } catch (_) { return; }
+      const target = v.offset + masterTime;
+      if (Math.abs(cur - target) > DRIFT_THRESHOLD) {
+        try { v.player.seekTo(Math.max(0, target), true); } catch (_) {}
+      }
+      if (st !== YT.PlayerState.PLAYING && st !== YT.PlayerState.BUFFERING) {
+        try { v.player.playVideo(); } catch (_) {}
+      }
+    });
+  }
+
+  document.getElementById('masterTime').textContent = fmtTime(masterTime);
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+function onPlayerStateChange(v, e) {
+  if (v !== leader()) return;   // only the leader mirrors native control clicks globally
+  if (e.data === YT.PlayerState.PLAYING && !isPlaying) playAll();
+  else if (e.data === YT.PlayerState.PAUSED && isPlaying) pauseAll();
+}
+
+/* ---------------- Transport ---------------- */
+function playAll() {
+  if (videos.length === 0) return;
+  isPlaying = true;
+  lastTick = performance.now();
+  videos.forEach(v => { if (v.ready) { seekVideoToMaster(v); try { v.player.playVideo(); } catch (_) {} } });
+  updateTransport();
+}
+function pauseAll() {
+  isPlaying = false;
+  videos.forEach(v => { if (v.ready) { try { v.player.pauseVideo(); } catch (_) {} } });
+  updateTransport();
+}
+function togglePlay() { isPlaying ? pauseAll() : playAll(); }
+
+function skip(sec) {
+  masterTime = Math.max(0, masterTime + sec);
+  videos.forEach(v => seekVideoToMaster(v));
+  document.getElementById('masterTime').textContent = fmtTime(masterTime);
+  toast((sec >= 0 ? '+' : '') + sec + 's');
+}
+function resyncAll() { videos.forEach(v => seekVideoToMaster(v)); toast('Resynced'); }
+
+function updateTransport() {
+  document.getElementById('playPause').textContent = isPlaying ? '❚❚ Pause' : '▶ Play';
+  document.getElementById('statusDot').classList.toggle('playing', isPlaying);
+}
+
+/* ---------------- Focus + audio ---------------- */
+function setFocus(i) {
+  if (i < 0 || i >= videos.length) return;
+  focusIndex = i;
+  audioIndex = i;              // focusing a POV brings its audio too
+  relayout();
+  applyAudioState();
+  updateAudioButtons();
+  toast('Focus: #' + (i + 1) + (videos[i].title ? ' — ' + videos[i].title : ''));
+}
+
+function setAudio(i) {         // per-cell 🔊 lets you keep audio on a non-focused POV
+  if (i < 0 || i >= videos.length) return;
+  audioIndex = i;
+  relayout();
+  applyAudioState();
+  updateAudioButtons();
+  toast('Audio: #' + (i + 1));
+}
+
+function muteAll() {
+  audioIndex = -1;
+  relayout();
+  applyAudioState();
+  updateAudioButtons();
+  toast('All muted');
+}
+
+function applyAudioState() {
+  videos.forEach((v, i) => {
+    if (!v.ready) return;
+    try {
+      if (i === audioIndex) { v.player.unMute(); v.player.setVolume(100); }
+      else { v.player.mute(); }
+    } catch (_) {}
+  });
+}
+function updateAudioButtons() {
+  videos.forEach((v, i) => v.els.audioBtn.classList.toggle('active', i === audioIndex));
+}
+
+/* ---------------- Wiring ---------------- */
+const urlInput = document.getElementById('urlInput');
+document.getElementById('addBtn').addEventListener('click', () => addVideo(urlInput.value));
+urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addVideo(urlInput.value); });
+
+document.getElementById('playPause').addEventListener('click', togglePlay);
+document.getElementById('back5').addEventListener('click', () => skip(-5));
+document.getElementById('fwd5').addEventListener('click', () => skip(5));
+document.getElementById('resync').addEventListener('click', resyncAll);
+
+document.addEventListener('keydown', (e) => {
+  if (e.target === urlInput) return;
+  const step = e.shiftKey ? 1 : 5;
+  switch (e.key) {
+    case ' ': e.preventDefault(); togglePlay(); break;
+    case 'ArrowLeft': e.preventDefault(); skip(-step); break;
+    case 'ArrowRight': e.preventDefault(); skip(step); break;
+    case 'r': case 'R': resyncAll(); break;
+    case '0': muteAll(); break;
+    default:
+      if (/^[1-6]$/.test(e.key)) setFocus(parseInt(e.key, 10) - 1);
+  }
+});
+</script>
+</body>
+</html>

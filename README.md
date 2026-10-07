@@ -71,11 +71,27 @@ That's it — the **👥 Party** button is now live.
 
 ### Using it
 
-- **Host:** set up your POVs and sync points, click **👥 Party → Start a party**,
-  and share the 6-digit code (or **Copy invite link**).
-- **Guests:** click **👥 Party**, enter the code, **Join**. They see your exact
-  setup and follow your playback. Guest controls are locked (the host drives);
-  late joiners jump straight to the current moment.
+- **Creator:** set up your POVs and sync points, click **👥 Party → Start a
+  party**, and share the 6-digit code (or **Copy invite link**).
+- **Guests:** click **👥 Party**, enter the code, **Join**. Everyone sees the same
+  POVs, sync points, and timestamp; late joiners jump straight to the current
+  moment.
+
+There are three roles:
+
+| Role | Play / pause / skip | Switch POV & audio | Videos, names, sync points |
+| --- | --- | --- | --- |
+| **Creator** | ✓ | ✓ | ✓ |
+| **Co-host** | ✓ | ✓ | — |
+| **Viewer** | — | — | — |
+
+Everyone joins as a viewer. The creator opens the **👥 Party** panel and clicks
+**Make co-host** / **Make viewer** next to anyone in the list. Playback and POV
+changes from any co-host apply to everyone, including the creator.
+
+Roles are tied to the browser session, so someone who reloads the page rejoins
+as a viewer and needs to be promoted again. If the creator leaves, the party
+ends for everyone.
 
 ### Expectations
 

@@ -24,8 +24,11 @@ common adapter so they share one master clock.
   browser — host plays/pauses/skips/switches and it follows for everyone.
   Requires a free Firebase project (see **Watch parties** below).
 - A master-clock loop continuously corrects drift so the feeds stay aligned.
-- Requests the highest available quality per feed (services ultimately pick
-  based on player size, so the focused feed gets the best resolution).
+- **Max quality on every feed.** YouTube removed the API for choosing quality,
+  and embeds cap resolution by player size. So each player is laid out 3840px
+  wide and scaled down to fit, and YouTube serves the highest resolution the
+  video has (up to 4K), even in the small sidebar players. Your connection can
+  still make YouTube step down.
 - Native YouTube chrome and captions are hidden (the app is the control
   surface); the Sync Setup wizard provides its own scrubber so you can still
   line up frames precisely. Clicking the main video also plays/pauses.
@@ -71,7 +74,7 @@ That's it — the **👥 Party** button is now live.
 
 ### Using it
 
-- **Creator:** set up your POVs and sync points, click **👥 Party → Start a
+- **Host:** set up your POVs and sync points, click **👥 Party → Start a
   party**, and share the 6-digit code (or **Copy invite link**).
 - **Guests:** click **👥 Party**, enter the code, **Join**. Everyone sees the same
   POVs, sync points, and timestamp; late joiners jump straight to the current
@@ -81,17 +84,29 @@ There are three roles:
 
 | Role | Play / pause / skip | Switch POV & audio | Videos, names, sync points |
 | --- | --- | --- | --- |
-| **Creator** | ✓ | ✓ | ✓ |
+| **Host** | ✓ | ✓ | ✓ |
 | **Co-host** | ✓ | ✓ | — |
 | **Viewer** | — | — | — |
 
-Everyone joins as a viewer. The creator opens the **👥 Party** panel and clicks
+Everyone joins as a viewer. The host opens the **👥 Party** panel and clicks
 **Make co-host** / **Make viewer** next to anyone in the list. Playback and POV
-changes from any co-host apply to everyone, including the creator.
+changes from any co-host apply to everyone, including the host.
 
-Roles are tied to the browser session, so someone who reloads the page rejoins
-as a viewer and needs to be promoted again. If the creator leaves, the party
-ends for everyone.
+Everyone can set **Your name** at the top of the Party panel. It's remembered
+in your browser and can be changed mid-party. Names appear in the people list
+and in the live activity feed (bottom-left), where actions from others show up
+for a couple of seconds, e.g. "Noah paused" or "Aaron skipped forward 5
+seconds".
+
+**Reloading is safe.** A reload automatically rejoins the room as the same
+person, keeping your role (host, co-host, or viewer). Sound stays off until you
+click once, because browsers don't allow audio to start without a click.
+
+**If the host drops out** (closes the tab, loses connection) and isn't back
+within 15 seconds, the next person takes over as host automatically — co-hosts
+first, then whoever joined earliest. The old host becomes a co-host, so they
+still have controls if they come back. Only the host's **End party** button
+closes the room for everyone.
 
 ### Expectations
 

@@ -98,7 +98,8 @@
   .cell.side { grid-column: 2; }
   .cell.audio { box-shadow: inset 0 0 0 2px var(--accent-2); }
 
-  .cell-video { position: relative; width: 100%; background: #000; flex: 1; min-height: 0; }
+  /* overflow:hidden clips the oversized (then scaled-down) player iframe — see sizePlayer(). */
+  .cell-video { position: relative; width: 100%; background: #000; flex: 1; min-height: 0; overflow: hidden; }
   .cell.focused .cell-video { aspect-ratio: auto; }        /* fill available stage height */
   .cell.side .cell-video { aspect-ratio: 16 / 9; flex: none; }
   .cell-video iframe, .cell-video .player-host { position: absolute; inset: 0; width: 100%; height: 100%; }
@@ -191,6 +192,13 @@
     background: transparent; border: none; color: var(--muted); font-size: 16px;
   }
   .party-note { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 0 0 16px; }
+  .party-name-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+  .party-name-row label { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .party-name-row input {
+    flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--radius); padding: 8px 10px; font-size: 14px; outline: none;
+  }
+  .party-name-row input:focus { border-color: var(--accent-2); }
   .party-row { display: flex; gap: 8px; margin-bottom: 8px; }
   .party-row button { flex: 1; padding: 10px; }
   .party-row #partyCodeInput {
@@ -219,6 +227,21 @@
     display: flex; align-items: center; gap: 7px;
   }
   .party-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+
+  /* Live activity feed ("Noah paused") — stacks above the party pill. */
+  .activity {
+    position: fixed; left: 14px; bottom: 96px; z-index: 56;
+    display: flex; flex-direction: column; gap: 6px; align-items: flex-start;
+    pointer-events: none;
+  }
+  .activity-item {
+    background: var(--panel-2); border: 1px solid var(--border); border-left: 3px solid var(--accent-2);
+    border-radius: 8px; padding: 7px 12px; font-size: 13px; max-width: 340px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.4);
+    opacity: 0; transform: translateY(6px); transition: opacity .2s, transform .2s;
+  }
+  .activity-item.show { opacity: 1; transform: none; }
+  .activity-item strong { color: var(--accent-2); }
   .party-pill.guest { border-color: var(--good); }
 
   /* Party permissions, two tiers:
@@ -317,6 +340,11 @@
       <button class="party-close" id="partyClose" title="Close">✕</button>
       <h2>👥 Watch Party</h2>
 
+      <div class="party-name-row">
+        <label for="partyNameInput">Your name</label>
+        <input id="partyNameInput" type="text" maxlength="24" placeholder="So everyone knows who you are" autocomplete="off" spellcheck="false" />
+      </div>
+
       <!-- Not in a party -->
       <div id="partyIdle">
         <p class="party-note">Watch in sync with friends in their own browsers. One person hosts and controls playback; everyone else follows the same POVs, sync points, and timestamp.</p>
@@ -351,6 +379,8 @@
   <div class="party-pill" id="partyPill" style="display:none">
     <span class="dot"></span><span id="partyPillText">Party</span>
   </div>
+
+  <div class="activity" id="activity" aria-live="polite"></div>
 
   <div class="toast" id="toast"></div>
 
@@ -479,7 +509,7 @@ function restoreFromUrl() {
    The player is wrapped in a small interface so the sync core, wizard, and
    audio logic stay decoupled from the YouTube IFrame API:
      getTime() getDuration() seek(t) play() pause() setAudible(bool)
-     isActivelyPlaying() keepPlaying() setBestQuality() getTitle() destroy()
+     isActivelyPlaying() keepPlaying() getQuality() getTitle() destroy()
 */
 function createYouTubePlayer(hostId, videoId, cb) {
   let player;
@@ -493,14 +523,8 @@ function createYouTubePlayer(hostId, videoId, cb) {
     setAudible(on) { try { if (on) { player.unMute(); player.setVolume(100); } else player.mute(); } catch (_) {} },
     isActivelyPlaying() { try { return player.getPlayerState() === YT.PlayerState.PLAYING; } catch (_) { return false; } },
     keepPlaying() { try { const s = player.getPlayerState(); if (s !== YT.PlayerState.PLAYING && s !== YT.PlayerState.BUFFERING) player.playVideo(); } catch (_) {} },
-    setBestQuality() {
-      try {
-        const levels = player.getAvailableQualityLevels && player.getAvailableQualityLevels();
-        const best = (levels && levels.length) ? levels[0] : 'highres';
-        if (player.setPlaybackQualityRange) player.setPlaybackQualityRange(best, best);
-        if (player.setPlaybackQuality) player.setPlaybackQuality(best);
-      } catch (_) {}
-    },
+    // Read-only: YouTube ignores quality *requests*, but still reports what it picked.
+    getQuality() { try { return player.getPlaybackQuality(); } catch (_) { return null; } },
     getTitle() { try { return player.getVideoData().title || null; } catch (_) { return null; } },
     destroy() { try { player.destroy(); } catch (_) {} },
   };
@@ -517,7 +541,6 @@ function createYouTubePlayer(hostId, videoId, cb) {
       playerVars: { controls: 0, disablekb: 1, rel: 0, modestbranding: 1, playsinline: 1, iv_load_policy: 3, fs: 0, cc_load_policy: 0 },
       events: {
         onReady: () => { hideCaptions(); cb.onReady && cb.onReady(); },
-        onPlaybackQualityChange: () => cb.onQuality && cb.onQuality(),
         onStateChange: (e) => {
           if (e.data === YT.PlayerState.PLAYING) { hideCaptions(); cb.onPlay && cb.onPlay(); }
           else if (e.data === YT.PlayerState.PAUSED) cb.onPause && cb.onPause();
@@ -528,11 +551,35 @@ function createYouTubePlayer(hostId, videoId, cb) {
   return adapter;
 }
 
-/* Best-effort request for maximum quality (YouTube ultimately decides from player size). */
-function requestBestQuality(v) {
-  if (!v.ready || !v.player) return;
-  v.player.setBestQuality();
+/* ---- Max quality ----
+   YouTube removed setPlaybackQuality from the IFrame API; embeds always run in
+   adaptive "auto" mode, capped by how big the player is. So we lay each iframe
+   out at QUALITY_RENDER_WIDTH px wide (matching the cell's aspect) and
+   CSS-scale it down to fit. YouTube sees a 4K-sized player and picks the top
+   resolution the video and connection allow. */
+const QUALITY_RENDER_WIDTH = 3840;
+
+function sizePlayer(v) {
+  const wrap = v.el.querySelector('.cell-video');
+  const frame = wrap && (wrap.querySelector('iframe') || wrap.querySelector('.player-host'));
+  if (!frame) return;
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  if (!w || !h) return;
+  const k = Math.min(1, w / QUALITY_RENDER_WIDTH);
+  Object.assign(frame.style, {
+    inset: 'auto', left: '0', top: '0',
+    width: (w / k) + 'px', height: (h / k) + 'px',
+    transform: 'scale(' + k + ')', transformOrigin: '0 0'
+  });
 }
+
+// Re-fit whenever a cell changes size (focus swaps, window resizes, layout).
+const playerResizeObserver = new ResizeObserver(entries => {
+  entries.forEach(entry => {
+    const v = videos.find(x => x.el.contains(entry.target));
+    if (v) sizePlayer(v);
+  });
+});
 
 /* ---------------- Layout ---------------- */
 function relayout() {
@@ -561,8 +608,6 @@ function relayout() {
     v.el.classList.toggle('audio', i === audioIndex);
     v.els.badge.textContent = '#' + (i + 1) + (focused ? ' • FOCUS' : '');
   });
-  // Focused player just got bigger — nudge it to re-pick a higher quality.
-  requestBestQuality(videos[focusIndex]);
 }
 
 /* ---------------- Add / remove ---------------- */
@@ -618,6 +663,7 @@ function addVideo(input, opts = {}) {
   cell.appendChild(videoWrap);
   cell.appendChild(bar);
   grid.appendChild(cell);
+  playerResizeObserver.observe(videoWrap);
 
   const vObj = {
     id, srcType: src.type, srcId: src.id, player: null, ready: false, offset: 0,
@@ -664,11 +710,10 @@ function addVideo(input, opts = {}) {
       const t = vObj.player.getTitle();
       if (t) vObj.title = t;
       vObj.els.title.textContent = nameOf(vObj);
-      requestBestQuality(vObj);
+      sizePlayer(vObj);   // YT just swapped our placeholder div for the iframe
       applyAudioState();
       seekVideoToMaster(vObj);
     },
-    onQuality: () => requestBestQuality(vObj),
     onPlay: () => {
       if (party.active) return;   // in a party, playback is driven by explicit actions + the room
       if (vObj === leader() && !isPlaying) playAll();
@@ -690,6 +735,7 @@ function removeVideo(vObj) {
   const i = videos.indexOf(vObj);
   if (i === -1) return;
   try { vObj.player && vObj.player.destroy(); } catch (_) {}
+  playerResizeObserver.unobserve(vObj.el.querySelector(".cell-video"));
   vObj.el.remove();
   videos.splice(i, 1);
   if (focusIndex >= videos.length) focusIndex = Math.max(0, videos.length - 1);
@@ -798,14 +844,14 @@ function playAll() {
     v.player.play();
   });
   updateTransport();
-  broadcastPlayback();
+  broadcastPlayback({ t: 'play' });
 }
 function pauseAll() {
   if (!canControl()) return;
   isPlaying = false;
   videos.forEach(v => { if (v.ready) v.player.pause(); });
   updateTransport();
-  broadcastPlayback();
+  broadcastPlayback({ t: 'pause' });
 }
 function togglePlay() { if (!canControl()) return; isPlaying ? pauseAll() : playAll(); }
 
@@ -815,13 +861,13 @@ function skip(sec) {
   videos.forEach(v => seekVideoToMaster(v));
   document.getElementById('masterTime').textContent = fmtTime(masterTime);
   toast((sec >= 0 ? '+' : '') + sec + 's');
-  broadcastPlayback();
+  broadcastPlayback({ t: 'skip', s: sec });
 }
 function resyncAll() {
   if (!canControl()) return;
   videos.forEach(v => seekVideoToMaster(v));
   toast('Resynced');
-  broadcastPlayback();
+  broadcastPlayback({ t: 'resync' });
 }
 
 function updateTransport() {
@@ -840,7 +886,7 @@ function setFocus(i) {
   updateAudioButtons();
   toast('Focus: #' + (i + 1) + ' — ' + nameOf(videos[i]));
   saveStateToUrl();
-  broadcastView();
+  broadcastView({ t: 'focus', i });
 }
 
 function setAudio(i) {         // per-cell 🔊 lets you keep audio on a non-focused POV
@@ -852,7 +898,7 @@ function setAudio(i) {         // per-cell 🔊 lets you keep audio on a non-foc
   updateAudioButtons();
   toast('Audio: #' + (i + 1));
   saveStateToUrl();
-  broadcastView();
+  broadcastView({ t: 'audio', i });
 }
 
 function muteAll() {
@@ -863,11 +909,26 @@ function muteAll() {
   updateAudioButtons();
   toast('All muted');
   saveStateToUrl();
-  broadcastView();
+  broadcastView({ t: 'mute' });
+}
+
+// After an automatic rejoin there's been no click yet, and browsers refuse to
+// start unmuted playback without one. Stay muted (still playing, still synced)
+// until the first interaction, then restore sound.
+let audioUnlocked = true;
+function lockAudioUntilInteraction() {
+  audioUnlocked = false;
+  applyAudioState();
+  const unlock = () => {
+    audioUnlocked = true;
+    applyAudioState();
+    ['pointerdown', 'keydown'].forEach(ev => document.removeEventListener(ev, unlock, true));
+  };
+  ['pointerdown', 'keydown'].forEach(ev => document.addEventListener(ev, unlock, true));
 }
 
 function applyAudioState() {
-  videos.forEach((v, i) => { if (v.ready) v.player.setAudible(i === audioIndex); });
+  videos.forEach((v, i) => { if (v.ready) v.player.setAudible(audioUnlocked && i === audioIndex); });
 }
 function updateAudioButtons() {
   videos.forEach((v, i) => v.els.audioBtn.classList.toggle('active', i === audioIndex));
@@ -1005,7 +1066,7 @@ function finishWizard() {
   document.getElementById('masterTime').textContent = fmtTime(masterTime);
   toast('Synced ' + wizardCaptures.filter(c => c != null).length + ' videos. Press Space to play.');
   saveStateToUrl();
-  broadcastPlayback();   // in a party, reset everyone's clock to the new sync point
+  broadcastPlayback({ t: 'sync' });   // in a party, reset everyone's clock to the new sync point
 }
 
 function cancelWizard() { closeWizard(); toast('Sync setup cancelled'); }
@@ -1034,8 +1095,9 @@ let db = null;
 let serverTimeOffset = 0;              // ms; Date.now()+offset ≈ server time
 let applyingRoom = false;              // suppress outgoing writes while applying room state
 const party = {
-  active: false, role: null, code: null, ref: null, clientId: null, meRef: null,
-  setup: null, view: null, playback: null, members: {}
+  active: false, role: null, code: null, ref: null, clientId: null, joinedAt: 0,
+  meRef: null, connRef: null, connCb: null, connected: false,
+  setup: null, view: null, playback: null, members: {}, roles: {}, meta: null
 };
 
 function isOwner() { return party.active && party.role === 'owner'; }
@@ -1077,32 +1139,36 @@ function broadcastSetup() {
   party.setup = setup;
   party.ref.child('setup').set(setup);
 }
-function broadcastView() {
+// `act` describes what the sender did, so everyone else can show "Noah paused".
+function broadcastView(act) {
   if (!party.active || !canControl() || !party.ref || applyingRoom) return;
   const view = { f: focusIndex, a: audioIndex, by: party.clientId };
+  if (act) view.act = act;
   party.view = view;
   party.ref.child('view').set(view);
 }
-function broadcastPlayback() {
+function broadcastPlayback(act) {
   if (!party.active || !canControl() || !party.ref) return;
   const pb = {
     isPlaying, masterTime: Math.round(masterTime * 100) / 100,
     atServerTime: serverNow(), by: party.clientId
   };
+  if (act) pb.act = act;
   party.playback = pb;   // our own tick extrapolates from this immediately
   party.ref.child('playback').set(pb);
 }
 
 /* ---- Incoming ---- */
 // Reconcile local videos/focus/audio with the cached room setup + view.
-function renderRoomState() {
+// `force` re-applies the setup even if we wrote it (initial sync after a reload).
+function renderRoomState(force) {
   applyingRoom = true;
   const setup = party.setup;
-  if (setup && setup.by !== party.clientId) {
+  if (setup && (force || setup.by !== party.clientId)) {
     const vids = Array.isArray(setup.vids) ? setup.vids : [];
     const sameList = videos.length === vids.length && videos.every((v, i) => v.srcId === vids[i].y);
     if (!sameList) {
-      videos.slice().forEach(v => { try { v.player && v.player.destroy(); } catch (_) {} v.el.remove(); });
+      videos.slice().forEach(v => { try { v.player && v.player.destroy(); } catch (_) {} playerResizeObserver.unobserve(v.el.querySelector(".cell-video")); v.el.remove(); });
       videos.length = 0;
       document.getElementById('grid').innerHTML = '';
       document.getElementById('grid').classList.remove('solo-col');
@@ -1151,65 +1217,220 @@ function applyRoomPlayback(pb) {
 
 function subscribeRoom() {
   const r = party.ref;
+  // The first snapshot of each node is the room's existing state. Always apply
+  // it — even if we wrote it (we may have just reloaded) — but don't announce it.
+  let firstSetup = true, firstView = true, firstPlayback = true;
   r.child('setup').on('value', s => {
     party.setup = s.val();
-    if (party.setup && party.setup.by !== party.clientId) renderRoomState();
+    const first = firstSetup; firstSetup = false;
+    if (party.setup && (first || party.setup.by !== party.clientId)) renderRoomState(first);
   });
   r.child('view').on('value', s => {
     party.view = s.val();
-    if (party.view && party.view.by !== party.clientId) renderRoomState();
+    const first = firstView; firstView = false;
+    if (party.view && (first || party.view.by !== party.clientId)) {
+      renderRoomState(false);
+      if (!first && party.view.act) showActivity(party.view.by, party.view.act);
+    }
   });
   r.child('playback').on('value', s => {
     const pb = s.val();
-    if (pb && pb.by !== party.clientId) applyRoomPlayback(pb);
+    const first = firstPlayback; firstPlayback = false;
+    if (pb && (first || pb.by !== party.clientId)) {
+      applyRoomPlayback(pb);
+      if (!first && pb.act) showActivity(pb.by, pb.act);
+    }
   });
-  r.child('members').on('value', s => { party.members = s.val() || {}; onMembersChanged(); });
+  r.child('members').on('value', s => { party.members = s.val() || {}; onRoomPeopleChanged(); });
+  r.child('roles').on('value', s => { party.roles = s.val() || {}; onRoomPeopleChanged(); });
   r.child('meta').on('value', s => {
-    if (party.active && !isOwner() && !s.exists()) { toast('The party creator ended the party'); leaveParty(); }
+    if (!party.active) return;
+    if (!s.exists()) { toast('The host ended the party'); leaveParty(); return; }
+    const prevOwner = party.meta && party.meta.owner;
+    party.meta = s.val();
+    if (prevOwner && party.meta.owner !== prevOwner && party.meta.owner !== party.clientId) {
+      showActivity(party.meta.owner, { t: 'host' });
+    }
+    onRoomPeopleChanged();
   });
 }
 
-/* ---- Presence + roles ---- */
-function registerPresence(role) {
+/* ---- Display names (remembered per browser; a convenience, not identity) ---- */
+const NAME_KEY = 'multipov.name';
+function myName() { return document.getElementById('partyNameInput').value.trim().slice(0, 24); }
+function loadMyName() {
+  try { document.getElementById('partyNameInput').value = localStorage.getItem(NAME_KEY) || ''; } catch (_) {}
+}
+let nameWriteTimer = null;
+function onMyNameChanged() {
+  const name = myName();
+  try { localStorage.setItem(NAME_KEY, name); } catch (_) {}
+  clearTimeout(nameWriteTimer);
+  nameWriteTimer = setTimeout(() => {
+    if (party.active && party.meRef) party.meRef.child('name').set(name || null);
+  }, 400);
+}
+
+/* ---- Presence ----
+   members/{id} is pure presence and is removed when the connection drops.
+   Using .info/connected re-registers automatically after a network blip. */
+function startPresence() {
   const meRef = party.ref.child('members/' + party.clientId);
-  const data = { online: true, joinedAt: firebase.database.ServerValue.TIMESTAMP };
-  if (role) data.role = role;          // only the owner writes a role for itself
-  meRef.update(data);
-  meRef.onDisconnect().remove();
   party.meRef = meRef;
+  party.connRef = db.ref('.info/connected');
+  party.connCb = party.connRef.on('value', s => {
+    party.connected = s.val() === true;
+    if (!party.connected || !party.active || party.meRef !== meRef) return;
+    meRef.onDisconnect().remove();
+    writePresence();
+  });
+}
+function writePresence() {
+  if (!party.active || !party.meRef) return;
+  const data = { online: true, joinedAt: party.joinedAt };
+  if (myName()) data.name = myName();
+  party.meRef.update(data);
 }
 
 function onlineMembers() {
   return Object.entries(party.members || {}).filter(([, m]) => m && m.online);
 }
 
-function onMembersChanged() {
-  if (party.active && !isOwner()) {
-    const me = party.members[party.clientId];
-    const newRole = (me && me.role === 'controller') ? 'controller' : 'viewer';
-    if (newRole !== party.role) {
-      party.role = newRole;
+/* ---- Roles ----
+   The host is whoever meta/owner names. Co-hosts live in roles/{id}, which is
+   NOT tied to presence — so a co-host who reloads keeps their role. */
+function memberRole(id) {
+  if (party.meta && party.meta.owner === id) return 'owner';
+  return (party.roles && party.roles[id] === 'controller') ? 'controller' : 'viewer';
+}
+
+function onRoomPeopleChanged() {
+  if (!party.active) return;
+  // If our own presence got wiped while we're still connected (e.g. the old
+  // page's disconnect cleanup landing after a fast reload), put it back.
+  if (party.connected && party.members && !party.members[party.clientId]) writePresence();
+  if (party.meta) {
+    const was = party.role;
+    const now = memberRole(party.clientId);
+    if (now !== was) {
+      party.role = now;
       applyRoleUI();
-      toast(newRole === 'controller' ? 'You’re now a co-host — you can control playback' : 'You’re now a viewer');
+      if (was) toast(now === 'owner' ? 'You’re now the host'
+        : now === 'controller' ? 'You’re now a co-host — you can control playback'
+        : 'You’re now a viewer');
     }
+    checkHostHandoff();
   }
   updatePartyUI();
 }
 
 function setMemberRole(id, role) {
   if (!isOwner() || !party.ref || id === party.clientId) return;
-  if (!party.members[id]) return;      // they left — don't create a ghost entry
-  party.ref.child('members/' + id + '/role').set(role);
+  if (!party.members[id]) return;      // they left
+  party.ref.child('roles/' + id).set(role === 'controller' ? 'controller' : null);
+}
+
+/* ---- Host handoff ----
+   If the host is offline for HOST_GRACE_MS (long enough to ride out a reload),
+   the best-placed person still here takes over: co-hosts first, then whoever
+   joined earliest. Everyone computes the same successor; only that person
+   attempts the claim, and a transaction guarantees a single winner. */
+const HOST_GRACE_MS = 15000;
+let handoffTimer = null;
+
+function checkHostHandoff() {
+  const owner = party.meta && party.meta.owner;
+  const ownerHere = owner && party.members[owner] && party.members[owner].online;
+  if (!party.active || !owner || ownerHere || isOwner()) {
+    clearTimeout(handoffTimer); handoffTimer = null;
+    return;
+  }
+  if (handoffTimer) return;   // already counting down
+  handoffTimer = setTimeout(() => { handoffTimer = null; tryClaimHost(owner); }, HOST_GRACE_MS);
+}
+
+function successorId() {
+  const rank = id => (party.roles && party.roles[id] === 'controller') ? 0 : 1;
+  return onlineMembers()
+    .map(([id, m]) => ({ id, joined: m.joinedAt || 0 }))
+    .sort((a, b) => rank(a.id) - rank(b.id) || a.joined - b.joined || (a.id < b.id ? -1 : 1))
+    .map(x => x.id)[0] || null;
+}
+
+function tryClaimHost(absentOwner) {
+  if (!party.active || !party.meta || party.meta.owner !== absentOwner) return;
+  if (party.members[absentOwner]) return;             // they came back
+  if (successorId() !== party.clientId) { checkHostHandoff(); return; }   // someone else's turn; keep watching
+  party.ref.child('meta/owner').transaction(
+    cur => (cur === absentOwner ? party.clientId : undefined),   // undefined = abort
+    (err, committed) => {
+      if (err || !committed) return;
+      party.ref.child('roles/' + absentOwner).set('controller');   // old host returns as a co-host
+      party.ref.child('roles/' + party.clientId).remove();
+    }
+  );
 }
 
 function memberLabel(id, m) {
-  if (id === party.clientId) return 'You';
-  return 'Guest ' + id.slice(0, 4);
+  const name = (m && typeof m.name === 'string') ? m.name.trim().slice(0, 24) : '';
+  if (id === party.clientId) return name ? name + ' (you)' : 'You';
+  return name || 'Guest ' + id.slice(0, 4);
 }
+
+/* ---- Activity feed: "Noah paused", "Aaron skipped forward 5 seconds" ---- */
+function povName(i) { return videos[i] ? nameOf(videos[i]) : 'POV ' + (i + 1); }
+function describeAct(act) {
+  switch (act && act.t) {
+    case 'play': return 'resumed';
+    case 'pause': return 'paused';
+    case 'skip': {
+      const s = Math.abs(Number(act.s) || 0);
+      return 'skipped ' + (act.s > 0 ? 'forward ' : 'back ') + s + (s === 1 ? ' second' : ' seconds');
+    }
+    case 'resync': return 'resynced everyone';
+    case 'sync': return 'set new sync points';
+    case 'focus': return 'switched to ' + povName(act.i);
+    case 'audio': return 'switched audio to ' + povName(act.i);
+    case 'mute': return 'muted all audio';
+    case 'host': return 'is now the host';
+    default: return null;
+  }
+}
+function showActivity(by, act) {
+  const text = describeAct(act);
+  if (!text) return;
+  const box = document.getElementById('activity');
+  const item = document.createElement('div');
+  item.className = 'activity-item';
+  const who = document.createElement('strong');
+  who.textContent = memberLabel(by, party.members[by]);
+  item.append(who, document.createTextNode(' ' + text));
+  box.append(item);
+  while (box.children.length > 5) box.firstElementChild.remove();
+  requestAnimationFrame(() => item.classList.add('show'));
+  setTimeout(() => {
+    item.classList.remove('show');
+    setTimeout(() => item.remove(), 250);
+  }, 2000);
+}
+
+/* ---- Session (per tab): a reload rejoins as the same person ---- */
+const SESSION_KEY = 'multipov.session';
+function saveSession() {
+  try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ code: party.code, clientId: party.clientId, joinedAt: party.joinedAt })); } catch (_) {}
+}
+function loadSession() {
+  try { return JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null'); } catch (_) { return null; }
+}
+function clearSession() { try { sessionStorage.removeItem(SESSION_KEY); } catch (_) {} }
 
 /* ---- Create / join / leave ---- */
 function resetPartyState() {
-  Object.assign(party, { setup: null, view: null, playback: null, members: {}, meRef: null });
+  clearTimeout(handoffTimer); handoffTimer = null;
+  Object.assign(party, {
+    setup: null, view: null, playback: null, members: {}, roles: {}, meta: null,
+    meRef: null, connRef: null, connCb: null, connected: false, joinedAt: 0
+  });
 }
 
 async function createRoom() {
@@ -1224,46 +1445,66 @@ async function createRoom() {
     }
   } catch (_) {}
   resetPartyState();
-  Object.assign(party, { active: true, role: 'owner', code, clientId: genClientId(), ref: db.ref('rooms/' + code) });
+  Object.assign(party, {
+    active: true, role: 'owner', code, clientId: genClientId(),
+    joinedAt: serverNow(), ref: db.ref('rooms/' + code)
+  });
+  party.meta = { owner: party.clientId };   // known locally before the snapshot lands
   await party.ref.child('meta').set({ owner: party.clientId, createdAt: firebase.database.ServerValue.TIMESTAMP });
-  registerPresence('owner');
+  startPresence();
   subscribeRoom();
   broadcastSetup();
   broadcastView();
   broadcastPlayback();
   applyRoleUI();
   setRoomHash(code);
+  saveSession();
   updatePartyUI();
   toast('Party started — code ' + code);
 }
 
-async function joinRoom(code) {
+// `resume` = { code, clientId, joinedAt } from this tab's session, after a reload.
+async function joinRoom(code, resume) {
   if (!ensureFirebase()) return;
   showPartyError('');
   code = String(code || '').trim();
   if (!/^\d{6}$/.test(code)) { showPartyError('Enter a 6-digit code.'); return; }
   let exists = false;
   try { exists = (await db.ref('rooms/' + code + '/meta').get()).exists(); } catch (_) {}
-  if (!exists) { showPartyError('Room ' + code + ' not found.'); return; }
+  if (!exists) {
+    if (resume) { clearSession(); toast('That party has ended'); setRoomHash(null); }
+    else showPartyError('Room ' + code + ' not found.');
+    return;
+  }
   if (wizardActive) cancelWizard();
   resetPartyState();
-  Object.assign(party, { active: true, role: 'viewer', code, clientId: genClientId(), ref: db.ref('rooms/' + code) });
-  registerPresence();
+  Object.assign(party, {
+    active: true, code, ref: db.ref('rooms/' + code),
+    role: resume ? null : 'viewer',     // a resumed role is restored silently from the room
+    clientId: resume ? resume.clientId : genClientId(),
+    joinedAt: (resume && resume.joinedAt) || serverNow()
+  });
+  startPresence();
   subscribeRoom();
   applyRoleUI();
   setRoomHash(code);
+  saveSession();
   updatePartyUI();
-  toast('Joined room ' + code);
+  toast(resume
+    ? 'Rejoined room ' + code + (audioUnlocked ? '' : ' — click anywhere for sound')
+    : 'Joined room ' + code);
 }
 
 function leaveParty() {
   if (party.ref) {
-    try { ['setup', 'view', 'playback', 'members', 'meta'].forEach(k => party.ref.child(k).off()); } catch (_) {}
-    try { party.meRef && party.meRef.remove(); } catch (_) {}
+    try { ['setup', 'view', 'playback', 'members', 'roles', 'meta'].forEach(k => party.ref.child(k).off()); } catch (_) {}
+    try { party.connRef && party.connRef.off('value', party.connCb); } catch (_) {}
+    try { if (party.meRef) { party.meRef.onDisconnect().cancel(); party.meRef.remove(); } } catch (_) {}
     if (isOwner()) { try { party.ref.remove(); } catch (_) {} }
   }
   resetPartyState();
   Object.assign(party, { active: false, role: null, code: null, ref: null });
+  clearSession();
   applyRoleUI();
   setRoomHash(null);
   updatePartyUI();
@@ -1275,8 +1516,8 @@ function closePartyModal() { document.getElementById('partyOverlay').classList.r
 function showPartyError(msg) { const el = document.getElementById('partyError'); if (el) el.textContent = msg || ''; }
 
 const ROLE_TEXT = {
-  owner: { label: 'Hosting room', pill: 'Hosting', note: 'You created this party: you manage the videos and sync points, and can make people co-hosts so they can control playback and POVs too.' },
-  controller: { label: 'Co-hosting room', pill: 'Co-hosting', note: 'You’re a co-host: you can play, pause, skip, and switch POVs for everyone. Only the creator can change videos or sync points.' },
+  owner: { label: 'Hosting room', pill: 'Hosting', note: 'You’re the host: you manage the videos and sync points, and can make people co-hosts so they can control playback and POVs too. If you drop out, a co-host takes over automatically.' },
+  controller: { label: 'Co-hosting room', pill: 'Co-hosting', note: 'You’re a co-host: you can play, pause, skip, and switch POVs for everyone. Only the host can change videos or sync points.' },
   viewer: { label: 'In room', pill: 'Watching', note: 'The hosts control playback and POVs. Sit back and watch in sync.' }
 };
 
@@ -1299,6 +1540,7 @@ function updatePartyUI() {
   document.getElementById('partyCode').textContent = party.code;
   document.getElementById('partyMembers').textContent = n + ' here';
   document.getElementById('partyActiveNote').textContent = t.note;
+  document.getElementById('partyLeaveBtn').textContent = isOwner() ? 'End party' : 'Leave';
   pill.style.display = '';
   pill.classList.toggle('guest', !isOwner());
   document.getElementById('partyPillText').textContent = t.pill + ' ' + party.code + ' · ' + n;
@@ -1308,11 +1550,11 @@ function updatePartyUI() {
 function renderPeople() {
   const box = document.getElementById('partyPeople');
   if (!box) return;
-  const order = { owner: 0, controller: 1 };
-  const rows = onlineMembers().sort(([, a], [, b]) => (order[a.role] ?? 2) - (order[b.role] ?? 2));
+  const order = { owner: 0, controller: 1, viewer: 2 };
+  const rows = onlineMembers().sort(([a], [b]) => order[memberRole(a)] - order[memberRole(b)]);
   box.innerHTML = '';
   rows.forEach(([id, m]) => {
-    const role = m.role === 'owner' ? 'owner' : (m.role === 'controller' ? 'controller' : 'viewer');
+    const role = memberRole(id);
     const row = document.createElement('div');
     row.className = 'party-person';
     const name = document.createElement('span');
@@ -1320,7 +1562,7 @@ function renderPeople() {
     name.textContent = memberLabel(id, m);
     const badge = document.createElement('span');
     badge.className = 'pp-role ' + role;
-    badge.textContent = role === 'owner' ? 'Creator' : (role === 'controller' ? 'Co-host' : 'Viewer');
+    badge.textContent = role === 'owner' ? 'Host' : (role === 'controller' ? 'Co-host' : 'Viewer');
     row.append(name, badge);
     if (isOwner() && role !== 'owner') {
       const btn = document.createElement('button');
@@ -1405,7 +1647,9 @@ window.addEventListener('blur', () => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.target === urlInput) return;
+  // Don't hijack typing in any text field (URL box, party code, your name…).
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' && t.type !== 'range' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
 
   // In the sync wizard, arrows nudge the current video and Enter captures.
   if (wizardActive) {
@@ -1442,6 +1686,8 @@ document.getElementById('partyJoinBtn').addEventListener('click', () => joinRoom
 document.getElementById('partyCodeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') joinRoom(e.target.value); });
 document.getElementById('partyCodeInput').addEventListener('input', (e) => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 6); });
 document.getElementById('partyLeaveBtn').addEventListener('click', leaveParty);
+loadMyName();
+document.getElementById('partyNameInput').addEventListener('input', onMyNameChanged);
 document.getElementById('partyPeople').addEventListener('click', (e) => {
   const btn = e.target.closest('.pp-toggle');
   if (btn) setMemberRole(btn.dataset.id, btn.dataset.role);
@@ -1456,10 +1702,17 @@ document.getElementById('partyCopyBtn').addEventListener('click', async () => {
 restoreFromUrl();
 updatePartyUI();
 
-/* If an invite link (#room=NNNNNN) was opened, prompt to join (the click is the
-   gesture browsers need to start playback with sound). */
+/* On load: if this tab was in a party before a reload, rejoin it as the same
+   person (same role). Otherwise, if an invite link (#room=NNNNNN) was opened,
+   prompt to join — that click is the gesture browsers need for sound. */
 (() => {
   const code = roomFromHash();
+  const resume = loadSession();
+  if (resume && resume.code && resume.clientId && (!code || code === resume.code) && firebaseConfigured()) {
+    lockAudioUntilInteraction();
+    joinRoom(resume.code, resume);
+    return;
+  }
   if (!code) return;
   openPartyModal();
   const input = document.getElementById('partyCodeInput');

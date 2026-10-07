@@ -16,9 +16,9 @@
 // this file. You can still .gitignore it if you prefer to keep it out of git.
 // ---------------------------------------------------------------------------
 window.FIREBASE_CONFIG = {
-  apiKey: "",
-  authDomain: "",
-  databaseURL: "",
-  projectId: "",
-  appId: ""
+  apiKey: "AIzaSyCCReg0prqjp17OR30eCKC_ofMSCWoMNnc",
+  authDomain: "sync-35564.firebaseapp.com",
+  databaseURL: "https://sync-35564-default-rtdb.firebaseio.com",
+  projectId: "sync-35564",
+  appId: "1:1096603560781:web:6822367604d03d7ac7e504"
 };

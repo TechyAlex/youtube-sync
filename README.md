@@ -1,7 +1,8 @@
-# MultiPOV — Synced YouTube Viewer
+# MultiPOV — Synced Multi-Angle Viewer
 
 Watch up to **6 YouTube POVs** at once, kept in sync — built for comparing
-side-by-side Mario Kart team-match perspectives.
+side-by-side Mario Kart team-match perspectives. Players are driven through a
+common adapter so they share one master clock.
 
 - One **focused** player in the main view; the other 1–5 as clickable
   miniplayers in the sidebar. Click a miniplayer (or press `1`–`6`) to swap it
@@ -18,9 +19,70 @@ side-by-side Mario Kart team-match perspectives.
   **⧉ Share** to copy a link that reopens the exact same synced setup, so you can
   hand a match to teammates. (Encoded in the URL hash, so it works on static
   hosting with no backend.)
+- **Watch parties.** One person hosts, gets a 6-digit room code, and everyone
+  who enters it watches the same POVs, sync points, and timestamp in their own
+  browser — host plays/pauses/skips/switches and it follows for everyone.
+  Requires a free Firebase project (see **Watch parties** below).
 - A master-clock loop continuously corrects drift so the feeds stay aligned.
-- Requests the highest available quality per feed (YouTube ultimately picks
+- Requests the highest available quality per feed (services ultimately pick
   based on player size, so the focused feed gets the best resolution).
+- Native YouTube chrome and captions are hidden (the app is the control
+  surface); the Sync Setup wizard provides its own scrubber so you can still
+  line up frames precisely. Clicking the main video also plays/pauses.
+
+## Watch parties
+
+Watch parties sync playback across different people's browsers, so they need a
+tiny realtime backend. This project uses **Firebase Realtime Database**, which
+has a free tier (Spark) that's far more than enough for this and **can't run up
+a bill** — if you exceed its limits, operations just throttle rather than
+charge you. The page itself still lives on static hosting (GitHub Pages); only
+the live room coordination goes through Firebase.
+
+### One-time setup (~5 min)
+
+1. Go to the [Firebase console](https://console.firebase.google.com) and
+   **Add project** (you can turn Google Analytics off).
+2. In the left nav: **Build → Realtime Database → Create Database.** Pick a
+   region, and start in **locked mode** (we'll set rules next).
+3. **Realtime Database → Rules**, paste this, and **Publish**:
+   ```json
+   {
+     "rules": {
+       "rooms": {
+         "$code": {
+           ".read": true,
+           ".write": true
+         }
+       }
+     }
+   }
+   ```
+   This lets anyone read/write under `/rooms` (fine for a hobby party app —
+   rooms are throwaway and keyed by a random code). For stronger protection you
+   can later add Firebase App Check or anonymous auth.
+4. **Project settings (gear) → General → Your apps → Web (`</>`)**, register an
+   app, and copy the `firebaseConfig` values.
+5. Paste them into [`firebase-config.js`](firebase-config.js) (`apiKey`,
+   `authDomain`, `databaseURL`, `projectId`, `appId`). These web values aren't
+   secret — Firebase ships them to every client by design.
+
+That's it — the **👥 Party** button is now live.
+
+### Using it
+
+- **Host:** set up your POVs and sync points, click **👥 Party → Start a party**,
+  and share the 6-digit code (or **Copy invite link**).
+- **Guests:** click **👥 Party**, enter the code, **Join**. They see your exact
+  setup and follow your playback. Guest controls are locked (the host drives);
+  late joiners jump straight to the current moment.
+
+### Expectations
+
+Cross-browser alignment is typically within ~0.25–1s (network latency +
+buffering + coarse seeking). Host pause/skip/POV-switch propagate to everyone
+within a moment. It is **not** frame-locked across machines — that isn't
+achievable over the internet and isn't needed for watching together.
 
 ## Keybinds
 

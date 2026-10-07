@@ -4,6 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>MultiPOV — Synced YouTube Viewer</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
+<script src="firebase-config.js"></script>
 <style>
   :root {
     --bg: #0e0f13;
@@ -101,8 +104,11 @@
   .cell-video iframe, .cell-video .player-host { position: absolute; inset: 0; width: 100%; height: 100%; }
 
   /* Transparent catcher over sidebar players so a click focuses (instead of hitting the iframe). */
+  /* Transparent catcher over EVERY player: clicks land on the page (not inside
+     the iframe), so keyboard shortcuts keep working. Clicking the focused cell
+     toggles play; sidebar clicks just reclaim focus (use the Switch button). */
   .focus-catch { position: absolute; inset: 0; z-index: 4; }
-  .cell.focused .focus-catch { display: none; }
+  .cell.focused .focus-catch { cursor: pointer; }
 
   .cell-badge {
     position: absolute; top: 8px; left: 8px; z-index: 5;
@@ -157,14 +163,72 @@
     border-radius: 6px; padding: 6px 10px; min-width: 92px; text-align: center;
   }
   .wizard-gap { flex: 1; min-width: 8px; }
+  .wizard-scrub { width: 100%; margin: 0 0 10px; accent-color: var(--accent-2); cursor: pointer; }
 
   .toast {
     position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%);
     background: var(--panel-2); border: 1px solid var(--border);
-    padding: 10px 16px; border-radius: var(--radius); z-index: 50;
+    padding: 10px 16px; border-radius: var(--radius); z-index: 80;
     opacity: 0; transition: opacity .2s; pointer-events: none;
   }
   .toast.show { opacity: 1; }
+
+  /* ---- Watch party ---- */
+  .party-overlay {
+    position: fixed; inset: 0; z-index: 70; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(0,0,0,.6);
+  }
+  .party-overlay.active { display: flex; }
+  .party-modal {
+    position: relative; width: 420px; max-width: calc(100vw - 24px);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 22px; box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  }
+  .party-modal h2 { margin: 0 0 14px; font-size: 18px; }
+  .party-close {
+    position: absolute; top: 12px; right: 12px; padding: 4px 8px;
+    background: transparent; border: none; color: var(--muted); font-size: 16px;
+  }
+  .party-note { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 0 0 16px; }
+  .party-row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .party-row button { flex: 1; padding: 10px; }
+  .party-row #partyCodeInput {
+    flex: 1; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--radius); padding: 10px 12px; font-size: 18px;
+    letter-spacing: 6px; text-align: center; font-variant-numeric: tabular-nums;
+  }
+  .party-row #partyJoinBtn { flex: 0 0 auto; padding: 10px 18px; }
+  .party-sep { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; margin: 12px 0; }
+  .party-sep::before, .party-sep::after { content: ""; height: 1px; background: var(--border); flex: 1; }
+  .party-err { color: var(--accent); font-size: 12px; min-height: 16px; margin: 6px 0 0; }
+
+  .party-code-box {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px; margin-bottom: 14px;
+  }
+  .party-code-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+  .party-code { font-size: 34px; font-weight: 700; letter-spacing: 8px; font-variant-numeric: tabular-nums; color: var(--accent-2); }
+  .party-members { color: var(--muted); font-size: 12px; }
+
+  .party-pill {
+    position: fixed; bottom: 56px; left: 14px; z-index: 55;
+    background: var(--panel-2); border: 1px solid var(--accent-2);
+    border-radius: 999px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .party-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+  .party-pill.guest { border-color: var(--good); }
+
+  /* Guests can watch but not control — the host drives the party. */
+  body.party-guest .add-row,
+  body.party-guest #back5, body.party-guest #playPause, body.party-guest #fwd5,
+  body.party-guest #resync, body.party-guest #syncWizard,
+  body.party-guest .switch-btn, body.party-guest .rename-btn,
+  body.party-guest .audio-btn, body.party-guest .setsync-btn, body.party-guest .remove-btn {
+    opacity: .4; pointer-events: none;
+  }
 </style>
 </head>
 <body>
@@ -184,6 +248,7 @@
       <button id="syncWizard" title="Step through each video to line up the same frame">◎ Sync Setup</button>
       <button id="resync" title="Force re-sync all">↺ Resync</button>
       <button id="shareBtn" title="Copy a shareable link to this exact setup">⧉ Share</button>
+      <button id="partyBtn" title="Watch together — host or join a synced room">👥 Party</button>
     </div>
   </header>
 
@@ -215,6 +280,7 @@
         <span class="wizard-step" id="wizStep">Sync Setup</span>
         <span class="wizard-sub" id="wizSub">Scrub this video to the shared moment, then capture.</span>
       </div>
+      <input type="range" id="wizScrub" class="wizard-scrub" min="0" max="100" step="0.05" value="0" />
       <div class="wizard-controls">
         <span class="wizard-time" id="wizTime">0:00.00</span>
         <button id="wizM1">« 1s</button>
@@ -230,17 +296,57 @@
     </div>
   </div>
 
+  <div class="party-overlay" id="partyOverlay">
+    <div class="party-modal">
+      <button class="party-close" id="partyClose" title="Close">✕</button>
+      <h2>👥 Watch Party</h2>
+
+      <!-- Not in a party -->
+      <div id="partyIdle">
+        <p class="party-note">Watch in sync with friends in their own browsers. One person hosts and controls playback; everyone else follows the same POVs, sync points, and timestamp.</p>
+        <div class="party-row">
+          <button class="primary" id="partyHostBtn">Start a party (host)</button>
+        </div>
+        <div class="party-sep"><span>or join</span></div>
+        <div class="party-row">
+          <input id="partyCodeInput" type="text" inputmode="numeric" maxlength="6" placeholder="6-digit code" autocomplete="off" />
+          <button id="partyJoinBtn">Join</button>
+        </div>
+        <p class="party-err" id="partyError"></p>
+      </div>
+
+      <!-- Active party -->
+      <div id="partyActive" style="display:none">
+        <div class="party-code-box">
+          <span class="party-code-label" id="partyRoleLabel">Hosting room</span>
+          <span class="party-code" id="partyCode">——————</span>
+          <span class="party-members" id="partyMembers">1 here</span>
+        </div>
+        <p class="party-note" id="partyActiveNote"></p>
+        <div class="party-row">
+          <button id="partyCopyBtn">⧉ Copy invite link</button>
+          <button id="partyLeaveBtn">Leave</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="party-pill" id="partyPill" style="display:none">
+    <span class="dot"></span><span id="partyPillText">Party</span>
+  </div>
+
   <div class="toast" id="toast"></div>
 
 <script>
 /* ---------------- YouTube IFrame API bootstrap ---------------- */
-let apiReady = false;
-const pendingInit = [];
+let ytReady = false;
+const pendingYT = [];
 window.onYouTubeIframeAPIReady = function () {
-  apiReady = true;
-  pendingInit.splice(0).forEach(fn => fn());
+  ytReady = true;
+  pendingYT.splice(0).forEach(fn => fn());
 };
-(function loadApi() {
+function whenYT(fn) { ytReady ? fn() : pendingYT.push(fn); }
+(function loadYT() {
   const tag = document.createElement('script');
   tag.src = 'https://www.youtube.com/iframe_api';
   document.head.appendChild(tag);
@@ -254,24 +360,25 @@ let masterTime = 0;       // seconds since the shared sync point
 let isPlaying = false;
 let focusIndex = 0;       // index of the big/leader video
 let audioIndex = 0;       // index of the audible video (defaults to focus)
-const DRIFT_THRESHOLD = 0.25;
 let lastTick = performance.now();
 
 /* ---------------- Helpers ---------------- */
-function parseVideoId(input) {
+// Returns { type: 'youtube', id } or null.
+function parseSource(input) {
   input = input.trim();
   if (!input) return null;
-  if (/^[a-zA-Z0-9_-]{11}$/.test(input)) return input;
+  if (/^[a-zA-Z0-9_-]{11}$/.test(input)) return { type: 'youtube', id: input };
   try {
     const url = new URL(input.includes('://') ? input : 'https://' + input);
-    if (url.hostname.includes('youtu.be')) return url.pathname.slice(1).split('/')[0] || null;
-    if (url.searchParams.get('v')) return url.searchParams.get('v');
+    const host = url.hostname.replace(/^www\./, '');
     const parts = url.pathname.split('/').filter(Boolean);
+    if (host.includes('youtu.be')) return { type: 'youtube', id: parts[0] || null };
+    if (url.searchParams.get('v')) return { type: 'youtube', id: url.searchParams.get('v') };
     const marker = parts.findIndex(p => ['embed', 'live', 'shorts', 'v'].includes(p));
-    if (marker !== -1 && parts[marker + 1]) return parts[marker + 1];
+    if (marker !== -1 && parts[marker + 1]) return { type: 'youtube', id: parts[marker + 1] };
   } catch (e) {}
   const m = input.match(/[a-zA-Z0-9_-]{11}/);
-  return m ? m[0] : null;
+  return m ? { type: 'youtube', id: m[0] } : null;
 }
 
 function fmtTime(t) {
@@ -311,14 +418,24 @@ function b64decode(b64) {
 
 let restoring = false;   // suppress URL writes while rebuilding from a link
 function saveStateToUrl() {
-  if (restoring) return;
+  if (restoring || applyingRoom) return;
   const st = {
     v: 1,
-    vids: videos.map(v => ({ y: v.ytId, o: Math.round(v.offset * 100) / 100, n: v.displayName || '' })),
+    vids: videos.map(v => ({
+      y: v.srcId,
+      o: Math.round(v.offset * 100) / 100,
+      n: v.displayName || ''
+    })),
     f: focusIndex,
     a: audioIndex
   };
-  try { history.replaceState(null, '', '#s=' + b64encode(JSON.stringify(st))); } catch (_) {}
+  try {
+    const roomM = (location.hash || '').match(/[#&]room=(\d{6})/);
+    let hash = '#s=' + b64encode(JSON.stringify(st));
+    if (roomM) hash += '&room=' + roomM[1];
+    history.replaceState(null, '', hash);
+  } catch (_) {}
+  broadcastSetup();   // host-only; no-op otherwise
 }
 function loadStateFromUrl() {
   const m = (location.hash || '').match(/[#&]s=([^&]+)/);
@@ -329,7 +446,10 @@ function restoreFromUrl() {
   const st = loadStateFromUrl();
   if (!st || !Array.isArray(st.vids) || !st.vids.length) return false;
   restoring = true;
-  st.vids.forEach(x => addVideo(x.y, { offset: x.o || 0, displayName: x.n || '', silent: true }));
+  st.vids.forEach(x => addVideo(null, {
+    source: { type: 'youtube', id: x.y },
+    offset: x.o || 0, displayName: x.n || '', silent: true
+  }));
   if (typeof st.f === 'number') focusIndex = Math.min(Math.max(0, st.f), videos.length - 1);
   if (typeof st.a === 'number') audioIndex = st.a;
   restoring = false;
@@ -338,15 +458,63 @@ function restoreFromUrl() {
   return true;
 }
 
+/* ---------------- Player adapter ----------------
+   The player is wrapped in a small interface so the sync core, wizard, and
+   audio logic stay decoupled from the YouTube IFrame API:
+     getTime() getDuration() seek(t) play() pause() setAudible(bool)
+     isActivelyPlaying() keepPlaying() setBestQuality() getTitle() destroy()
+*/
+function createYouTubePlayer(hostId, videoId, cb) {
+  let player;
+  const adapter = {
+    type: 'youtube',
+    getTime() { try { return player.getCurrentTime(); } catch (_) { return 0; } },
+    getDuration() { try { return player.getDuration() || 0; } catch (_) { return 0; } },
+    seek(t) { try { player.seekTo(Math.max(0, t), true); } catch (_) {} },
+    play() { try { player.playVideo(); } catch (_) {} },
+    pause() { try { player.pauseVideo(); } catch (_) {} },
+    setAudible(on) { try { if (on) { player.unMute(); player.setVolume(100); } else player.mute(); } catch (_) {} },
+    isActivelyPlaying() { try { return player.getPlayerState() === YT.PlayerState.PLAYING; } catch (_) { return false; } },
+    keepPlaying() { try { const s = player.getPlayerState(); if (s !== YT.PlayerState.PLAYING && s !== YT.PlayerState.BUFFERING) player.playVideo(); } catch (_) {} },
+    setBestQuality() {
+      try {
+        const levels = player.getAvailableQualityLevels && player.getAvailableQualityLevels();
+        const best = (levels && levels.length) ? levels[0] : 'highres';
+        if (player.setPlaybackQualityRange) player.setPlaybackQualityRange(best, best);
+        if (player.setPlaybackQuality) player.setPlaybackQuality(best);
+      } catch (_) {}
+    },
+    getTitle() { try { return player.getVideoData().title || null; } catch (_) { return null; } },
+    destroy() { try { player.destroy(); } catch (_) {} },
+  };
+  // Force captions off (YouTube may auto-enable CC from the viewer's account
+  // default). unloadModule covers both the HTML5 ('captions') and legacy ('cc')
+  // modules; re-applied on each play since CC can reload with the video.
+  const hideCaptions = () => {
+    try { player.unloadModule('captions'); } catch (_) {}
+    try { player.unloadModule('cc'); } catch (_) {}
+  };
+  whenYT(() => {
+    player = new YT.Player(hostId, {
+      videoId,
+      playerVars: { controls: 0, disablekb: 1, rel: 0, modestbranding: 1, playsinline: 1, iv_load_policy: 3, fs: 0, cc_load_policy: 0 },
+      events: {
+        onReady: () => { hideCaptions(); cb.onReady && cb.onReady(); },
+        onPlaybackQualityChange: () => cb.onQuality && cb.onQuality(),
+        onStateChange: (e) => {
+          if (e.data === YT.PlayerState.PLAYING) { hideCaptions(); cb.onPlay && cb.onPlay(); }
+          else if (e.data === YT.PlayerState.PAUSED) cb.onPause && cb.onPause();
+        }
+      }
+    });
+  });
+  return adapter;
+}
+
 /* Best-effort request for maximum quality (YouTube ultimately decides from player size). */
 function requestBestQuality(v) {
-  if (!v.ready) return;
-  try {
-    const levels = v.player.getAvailableQualityLevels && v.player.getAvailableQualityLevels();
-    const best = (levels && levels.length) ? levels[0] : 'highres';
-    if (v.player.setPlaybackQualityRange) v.player.setPlaybackQualityRange(best, best);
-    if (v.player.setPlaybackQuality) v.player.setPlaybackQuality(best);
-  } catch (_) {}
+  if (!v.ready || !v.player) return;
+  v.player.setBestQuality();
 }
 
 /* ---------------- Layout ---------------- */
@@ -383,8 +551,8 @@ function relayout() {
 /* ---------------- Add / remove ---------------- */
 function addVideo(input, opts = {}) {
   if (videos.length >= MAX_POVS) { toast('Max ' + MAX_POVS + ' POVs.'); return; }
-  const ytId = parseVideoId(input);
-  if (!ytId) { toast('Could not find a YouTube video ID in that.'); return; }
+  const src = opts.source || parseSource(input);
+  if (!src || !src.id) { toast('Could not find a YouTube video ID in that.'); return; }
 
   const id = nextId++;
   const grid = document.getElementById('grid');
@@ -432,7 +600,8 @@ function addVideo(input, opts = {}) {
   grid.appendChild(cell);
 
   const vObj = {
-    id, ytId, player: null, ready: false, offset: 0, title: 'Video', displayName: '',
+    id, srcType: src.type, srcId: src.id, player: null, ready: false, offset: 0,
+    lastSeekAt: 0, title: 'Video', displayName: '',
     el: cell,
     els: {
       badge, audioTag, focusCatch,
@@ -456,6 +625,11 @@ function addVideo(input, opts = {}) {
     vObj.els.title.textContent = opts.displayName;
   }
 
+  focusCatch.addEventListener('click', () => {
+    // Clicking any player pulls keyboard focus back to the page (so shortcuts
+    // work). Clicking the focused/main video also toggles play.
+    if (videos.indexOf(vObj) === focusIndex) togglePlay();
+  });
   vObj.els.switchBtn.addEventListener('click', (e) => { e.stopPropagation(); setFocus(videos.indexOf(vObj)); });
   vObj.els.renameBtn.addEventListener('click', (e) => { e.stopPropagation(); renameVideo(vObj); });
   vObj.els.audioBtn.addEventListener('click', (e) => { e.stopPropagation(); setAudio(videos.indexOf(vObj)); });
@@ -464,25 +638,27 @@ function addVideo(input, opts = {}) {
 
   relayout();
 
-  const init = () => {
-    vObj.player = new YT.Player(playerHostId, {
-      videoId: ytId,
-      playerVars: { controls: 1, disablekb: 1, rel: 0, modestbranding: 1, playsinline: 1 },
-      events: {
-        onReady: (e) => {
-          vObj.ready = true;
-          try { vObj.title = e.target.getVideoData().title || 'Video'; } catch (_) {}
-          vObj.els.title.textContent = nameOf(vObj);
-          requestBestQuality(vObj);
-          applyAudioState();
-          seekVideoToMaster(vObj);
-        },
-        onPlaybackQualityChange: () => requestBestQuality(vObj),
-        onStateChange: (e) => onPlayerStateChange(vObj, e),
-      }
-    });
+  const cb = {
+    onReady: () => {
+      vObj.ready = true;
+      const t = vObj.player.getTitle();
+      if (t) vObj.title = t;
+      vObj.els.title.textContent = nameOf(vObj);
+      requestBestQuality(vObj);
+      applyAudioState();
+      seekVideoToMaster(vObj);
+    },
+    onQuality: () => requestBestQuality(vObj),
+    onPlay: () => {
+      if (isGuest()) return;   // guests follow the room, not local player events
+      if (vObj === leader() && !isPlaying) playAll();
+    },
+    onPause: () => {
+      if (isGuest()) return;
+      if (vObj === leader() && isPlaying) pauseAll();
+    },
   };
-  if (apiReady) init(); else pendingInit.push(init);
+  vObj.player = createYouTubePlayer(playerHostId, src.id, cb);
 
   document.getElementById('urlInput').value = '';
   updateAudioButtons();
@@ -490,6 +666,7 @@ function addVideo(input, opts = {}) {
 }
 
 function removeVideo(vObj) {
+  if (isGuest()) return;
   const i = videos.indexOf(vObj);
   if (i === -1) return;
   try { vObj.player && vObj.player.destroy(); } catch (_) {}
@@ -511,15 +688,19 @@ function removeVideo(vObj) {
 /* ---------------- Sync core ---------------- */
 // offset = video's own currentTime at the shared sync moment.
 // desired position at master time T  =  offset + T
-function seekVideoToMaster(v, allowAhead = true) {
+function seekVideoToMaster(v) {
   if (!v.ready) return;
-  try { v.player.seekTo(Math.max(0, v.offset + masterTime), allowAhead); } catch (_) {}
+  v.player.seek(Math.max(0, v.offset + masterTime));
+  v.lastSeekAt = performance.now();
 }
 
+const DRIFT_THRESHOLD = 0.25;   // seconds of drift before a follower is re-seeked
+const SEEK_COOLDOWN = 400;      // ms to let a seek settle before re-seeking
+
 function setSyncPoint(v) {
+  if (isGuest()) return;
   if (!v.ready) return;
-  let cur = 0;
-  try { cur = v.player.getCurrentTime(); } catch (_) {}
+  const cur = v.player.getTime();
   v.offset = cur - masterTime;   // so offset + masterTime == cur right now
   v.els.offset.textContent = 'sync: ' + fmtTime(cur);
   toast('Sync point set for #' + (videos.indexOf(v) + 1) + ' at ' + fmtTime(cur));
@@ -533,63 +714,97 @@ function tick() {
   const dt = (now - lastTick) / 1000;
   lastTick = now;
 
-  const lead = leader();
-  if (isPlaying && lead && lead.ready) {
-    let leadState = -1;
-    try { leadState = lead.player.getPlayerState(); } catch (_) {}
-    if (leadState === YT.PlayerState.PLAYING) {
-      try { masterTime = lead.player.getCurrentTime() - lead.offset; } catch (_) {}
-    } else {
-      masterTime += dt;
-      try { lead.player.playVideo(); } catch (_) {}
+  if (isGuest()) {
+    // The room is the clock authority: extrapolate master time from the last
+    // playback message, and treat every local player as a follower.
+    const pb = party.playback;
+    if (pb) masterTime = Math.max(0, pb.isPlaying ? pb.masterTime + (serverNow() - pb.atServerTime) / 1000 : pb.masterTime);
+    if (isPlaying && now - lastCorrect > 400) {
+      lastCorrect = now;
+      videos.forEach(v => {
+        if (!v.ready) return;
+        v.player.keepPlaying();
+        if (now - v.lastSeekAt < SEEK_COOLDOWN) return;
+        const drift = v.player.getTime() - (v.offset + masterTime);
+        if (Math.abs(drift) > DRIFT_THRESHOLD) { v.player.seek(Math.max(0, v.offset + masterTime)); v.lastSeekAt = now; }
+      });
     }
-    videos.forEach(v => {
-      if (v === lead || !v.ready) return;
-      let cur = 0, st = -1;
-      try { cur = v.player.getCurrentTime(); st = v.player.getPlayerState(); } catch (_) { return; }
-      const target = v.offset + masterTime;
-      if (Math.abs(cur - target) > DRIFT_THRESHOLD) {
-        try { v.player.seekTo(Math.max(0, target), true); } catch (_) {}
+  } else {
+    const lead = leader();
+    if (isPlaying && lead && lead.ready) {
+      if (lead.player.isActivelyPlaying()) {
+        masterTime = lead.player.getTime() - lead.offset;
+      } else {
+        masterTime += dt;
+        lead.player.keepPlaying();
       }
-      if (st !== YT.PlayerState.PLAYING && st !== YT.PlayerState.BUFFERING) {
-        try { v.player.playVideo(); } catch (_) {}
+      // Correct followers only a few times a second (not every frame), and never
+      // re-seek one that was just seeked — otherwise a follower can thrash
+      // between buffering states instead of settling into playback.
+      if (now - lastCorrect > 400) {
+        lastCorrect = now;
+        videos.forEach(v => {
+          if (v === lead || !v.ready) return;
+          v.player.keepPlaying();
+          if (now - v.lastSeekAt < SEEK_COOLDOWN) return;
+          const drift = v.player.getTime() - (v.offset + masterTime);
+          if (Math.abs(drift) > DRIFT_THRESHOLD) {
+            v.player.seek(Math.max(0, v.offset + masterTime));
+            v.lastSeekAt = now;
+          }
+        });
       }
-    });
+      // Host heartbeat: periodically re-broadcast the clock so guests stay aligned.
+      if (isHost() && now - lastHeartbeat > 2500) broadcastPlayback();
+    }
   }
 
   document.getElementById('masterTime').textContent = fmtTime(masterTime);
   requestAnimationFrame(tick);
 }
+let lastCorrect = 0;
 requestAnimationFrame(tick);
-
-function onPlayerStateChange(v, e) {
-  if (v !== leader()) return;   // only the leader mirrors native control clicks globally
-  if (e.data === YT.PlayerState.PLAYING && !isPlaying) playAll();
-  else if (e.data === YT.PlayerState.PAUSED && isPlaying) pauseAll();
-}
 
 /* ---------------- Transport ---------------- */
 function playAll() {
+  if (isGuest()) return;
   if (videos.length === 0) return;
   isPlaying = true;
   lastTick = performance.now();
-  videos.forEach(v => { if (v.ready) { seekVideoToMaster(v); try { v.player.playVideo(); } catch (_) {} } });
+  videos.forEach(v => {
+    if (!v.ready) return;
+    // Only re-seek if actually out of tolerance — a needless seek forces a
+    // re-buffer, so resume-from-pause stays instant when already aligned.
+    const drift = v.player.getTime() - (v.offset + masterTime);
+    if (Math.abs(drift) > DRIFT_THRESHOLD) seekVideoToMaster(v);
+    v.player.play();
+  });
   updateTransport();
+  broadcastPlayback();
 }
 function pauseAll() {
+  if (isGuest()) return;
   isPlaying = false;
-  videos.forEach(v => { if (v.ready) { try { v.player.pauseVideo(); } catch (_) {} } });
+  videos.forEach(v => { if (v.ready) v.player.pause(); });
   updateTransport();
+  broadcastPlayback();
 }
-function togglePlay() { isPlaying ? pauseAll() : playAll(); }
+function togglePlay() { if (isGuest()) return; isPlaying ? pauseAll() : playAll(); }
 
 function skip(sec) {
+  if (isGuest()) return;
   masterTime = Math.max(0, masterTime + sec);
   videos.forEach(v => seekVideoToMaster(v));
   document.getElementById('masterTime').textContent = fmtTime(masterTime);
   toast((sec >= 0 ? '+' : '') + sec + 's');
+  broadcastPlayback();
 }
-function resyncAll() { videos.forEach(v => seekVideoToMaster(v)); toast('Resynced'); }
+function resyncAll() {
+  if (isGuest()) return;
+  videos.forEach(v => seekVideoToMaster(v));
+  toast('Resynced');
+  broadcastPlayback();
+}
 
 function updateTransport() {
   document.getElementById('playPause').textContent = isPlaying ? '❚❚ Pause' : '▶ Play';
@@ -598,6 +813,7 @@ function updateTransport() {
 
 /* ---------------- Focus + audio ---------------- */
 function setFocus(i) {
+  if (isGuest()) return;
   if (i < 0 || i >= videos.length) return;
   focusIndex = i;
   audioIndex = i;              // focusing a POV brings its audio too
@@ -609,6 +825,7 @@ function setFocus(i) {
 }
 
 function setAudio(i) {         // per-cell 🔊 lets you keep audio on a non-focused POV
+  if (isGuest()) return;
   if (i < 0 || i >= videos.length) return;
   audioIndex = i;
   relayout();
@@ -619,6 +836,7 @@ function setAudio(i) {         // per-cell 🔊 lets you keep audio on a non-foc
 }
 
 function muteAll() {
+  if (isGuest()) return;
   audioIndex = -1;
   relayout();
   applyAudioState();
@@ -628,13 +846,7 @@ function muteAll() {
 }
 
 function applyAudioState() {
-  videos.forEach((v, i) => {
-    if (!v.ready) return;
-    try {
-      if (i === audioIndex) { v.player.unMute(); v.player.setVolume(100); }
-      else { v.player.mute(); }
-    } catch (_) {}
-  });
+  videos.forEach((v, i) => { if (v.ready) v.player.setAudible(i === audioIndex); });
 }
 function updateAudioButtons() {
   videos.forEach((v, i) => v.els.audioBtn.classList.toggle('active', i === audioIndex));
@@ -644,6 +856,7 @@ function updateAudioButtons() {
 function nameOf(v) { return (v.displayName && v.displayName.trim()) || v.title || 'Video'; }
 
 function renameVideo(v) {
+  if (isGuest()) return;
   const current = v.displayName || '';
   const name = window.prompt('Display name for this POV (leave blank to use the YouTube title):', current);
   if (name === null) return;            // cancelled
@@ -661,6 +874,7 @@ let wizardCaptures = [];  // captured currentTime per wizardList entry
 let wizardTimer = null;
 
 function startWizard() {
+  if (isGuest()) { toast('Host controls the watch party'); return; }
   const ready = videos.filter(v => v.ready);
   if (ready.length === 0) { toast('Add at least one video first.'); return; }
   pauseAll();
@@ -676,6 +890,7 @@ function startWizard() {
 function showWizardStep() {
   const v = wizardList[wizardStep];
   if (!v) { finishWizard(); return; }
+  wizScrubbing = false;
   setFocus(videos.indexOf(v));           // bring the current video into the big view
   const n = wizardList.length;
   document.getElementById('wizStep').textContent = 'Step ' + (wizardStep + 1) + ' / ' + n;
@@ -687,35 +902,38 @@ function showWizardStep() {
   updateWizardTime();
 }
 
+let wizScrubbing = false;
 function updateWizardTime() {
   const v = wizardList[wizardStep];
   if (!v || !v.ready) return;
-  let cur = 0;
-  try { cur = v.player.getCurrentTime(); } catch (_) {}
+  const cur = v.player.getTime();
   document.getElementById('wizTime').textContent = fmtTime2(cur);
+  if (!wizScrubbing) {
+    const scrub = document.getElementById('wizScrub');
+    const dur = v.player.getDuration();
+    if (dur > 0) scrub.max = dur.toFixed(2);
+    scrub.value = cur;
+  }
 }
 
 function wizardNudge(sec) {
   const v = wizardList[wizardStep];
   if (!v || !v.ready) return;
-  let cur = 0;
-  try { cur = v.player.getCurrentTime(); } catch (_) {}
-  try { v.player.seekTo(Math.max(0, cur + sec), true); } catch (_) {}
+  v.player.seek(Math.max(0, v.player.getTime() + sec));
   setTimeout(updateWizardTime, 60);
 }
 
 function wizardTogglePlay() {
   const v = wizardList[wizardStep];
   if (!v || !v.ready) return;
-  let st = -1;
-  try { st = v.player.getPlayerState(); } catch (_) {}
-  try { (st === YT.PlayerState.PLAYING) ? v.player.pauseVideo() : v.player.playVideo(); } catch (_) {}
+  v.player.isActivelyPlaying() ? v.player.pause() : v.player.play();
 }
 
 function wizardCaptureNext() {
   const v = wizardList[wizardStep];
   if (!v || !v.ready) return;
-  try { v.player.pauseVideo(); wizardCaptures[wizardStep] = v.player.getCurrentTime(); } catch (_) {}
+  v.player.pause();
+  wizardCaptures[wizardStep] = v.player.getTime();
   if (wizardStep < wizardList.length - 1) { wizardStep++; showWizardStep(); }
   else finishWizard();
 }
@@ -750,10 +968,232 @@ function closeWizard() {
   document.getElementById('wizard').classList.remove('active');
 }
 
+/* ---------------- Watch party (Firebase Realtime Database) ---------------- */
+let db = null;
+let serverTimeOffset = 0;              // ms; Date.now()+offset ≈ server time
+let applyingRoom = false;              // suppress outgoing writes while applying room state
+let lastHeartbeat = 0;
+const party = { active: false, role: null, code: null, ref: null, clientId: null, playback: null };
+
+function isHost() { return party.active && party.role === 'host'; }
+function isGuest() { return party.active && party.role === 'guest'; }
+function serverNow() { return Date.now() + serverTimeOffset; }
+function genClientId() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
+function genCode() { return String(Math.floor(100000 + Math.random() * 900000)); }
+
+function firebaseConfigured() {
+  const c = window.FIREBASE_CONFIG;
+  return !!(c && c.apiKey && c.databaseURL);
+}
+function ensureFirebase() {
+  if (db) return true;
+  if (!firebaseConfigured()) {
+    showPartyError('Watch parties need Firebase. Add your config to firebase-config.js (see README).');
+    return false;
+  }
+  try {
+    if (!firebase.apps.length) firebase.initializeApp(window.FIREBASE_CONFIG);
+    db = firebase.database();
+    db.ref('.info/serverTimeOffset').on('value', s => { serverTimeOffset = s.val() || 0; });
+    return true;
+  } catch (e) {
+    showPartyError('Could not initialize Firebase: ' + (e && e.message || e));
+    return false;
+  }
+}
+
+/* ---- Outgoing (host writes room state) ---- */
+function roomSetupPayload() {
+  return {
+    vids: videos.map(v => ({ y: v.srcId, o: Math.round(v.offset * 100) / 100, n: v.displayName || '' })),
+    f: focusIndex, a: audioIndex
+  };
+}
+function broadcastSetup() {
+  if (!isHost() || !party.ref) return;
+  party.ref.child('setup').set(roomSetupPayload());
+}
+function broadcastPlayback() {
+  if (!isHost() || !party.ref) return;
+  party.ref.child('playback').set({
+    isPlaying, masterTime: Math.round(masterTime * 100) / 100,
+    atServerTime: serverNow(), by: party.clientId
+  });
+  lastHeartbeat = performance.now();
+}
+
+/* ---- Incoming (guest applies room state) ---- */
+function applyRoomSetup(setup) {
+  if (!setup || !Array.isArray(setup.vids)) return;
+  applyingRoom = true;
+  const sameList = videos.length === setup.vids.length &&
+    videos.every((v, i) => v.srcId === setup.vids[i].y);
+  if (!sameList) {
+    videos.slice().forEach(v => { try { v.player && v.player.destroy(); } catch (_) {} v.el.remove(); });
+    videos.length = 0;
+    document.getElementById('grid').innerHTML = '';
+    document.getElementById('grid').classList.remove('solo-col');
+    setup.vids.forEach(x => addVideo(null, {
+      source: { type: 'youtube', id: x.y },
+      offset: x.o || 0, displayName: x.n || '', silent: true
+    }));
+  } else {
+    setup.vids.forEach((x, i) => {
+      videos[i].offset = x.o || 0;
+      videos[i].els.offset.textContent = 'sync: ' + fmtTime(videos[i].offset);
+      videos[i].displayName = x.n || '';
+      videos[i].els.title.textContent = nameOf(videos[i]);
+    });
+  }
+  focusIndex = Math.min(Math.max(0, setup.f || 0), Math.max(0, videos.length - 1));
+  audioIndex = (setup.a == null) ? focusIndex : setup.a;
+  relayout();
+  applyAudioState();
+  updateAudioButtons();
+  applyingRoom = false;
+}
+
+function applyRoomPlayback(pb) {
+  if (!pb) return;
+  const prev = party.playback;
+  party.playback = pb;
+  const target = pb.isPlaying ? pb.masterTime + (serverNow() - pb.atServerTime) / 1000 : pb.masterTime;
+  const transition = !prev || prev.isPlaying !== pb.isPlaying;
+  const jump = Math.abs(masterTime - target) > 0.75;
+  masterTime = Math.max(0, target);
+  isPlaying = pb.isPlaying;
+  lastTick = performance.now();
+  if (transition || jump) {
+    videos.forEach(v => { if (!v.ready) return; seekVideoToMaster(v); pb.isPlaying ? v.player.play() : v.player.pause(); });
+  } else if (!pb.isPlaying) {
+    videos.forEach(v => { if (v.ready) v.player.pause(); });
+  }
+  updateTransport();
+}
+
+/* ---- Presence ---- */
+function watchMembers() {
+  if (!party.ref) return;
+  party.ref.child('members').on('value', s => {
+    const n = s.numChildren ? s.numChildren() : 0;
+    const txt = n + (n === 1 ? ' here' : ' here');
+    const el = document.getElementById('partyMembers');
+    if (el) el.textContent = txt;
+    const pill = document.getElementById('partyPillText');
+    if (pill && party.active) pill.textContent = (isHost() ? 'Hosting ' : 'Room ') + party.code + ' · ' + n;
+  });
+}
+function registerPresence() {
+  const meRef = party.ref.child('members/' + party.clientId);
+  meRef.set(true);
+  meRef.onDisconnect().remove();
+  party.meRef = meRef;
+}
+
+/* ---- Create / join / leave ---- */
+async function createRoom() {
+  if (!ensureFirebase()) return;
+  showPartyError('');
+  let code = genCode();
+  try {
+    for (let tries = 0; tries < 5; tries++) {
+      const snap = await db.ref('rooms/' + code + '/meta').get();
+      if (!snap.exists()) break;
+      code = genCode();
+    }
+  } catch (_) {}
+  party.active = true; party.role = 'host'; party.code = code;
+  party.clientId = genClientId(); party.ref = db.ref('rooms/' + code); party.playback = null;
+  await party.ref.child('meta').set({ host: party.clientId, createdAt: firebase.database.ServerValue.TIMESTAMP });
+  registerPresence();
+  watchMembers();
+  broadcastSetup();
+  broadcastPlayback();
+  setRoomHash(code);
+  updatePartyUI();
+  toast('Party started — code ' + code);
+}
+
+async function joinRoom(code) {
+  if (!ensureFirebase()) return;
+  showPartyError('');
+  code = String(code || '').trim();
+  if (!/^\d{6}$/.test(code)) { showPartyError('Enter a 6-digit code.'); return; }
+  let exists = false;
+  try { exists = (await db.ref('rooms/' + code + '/meta').get()).exists(); } catch (_) {}
+  if (!exists) { showPartyError('Room ' + code + ' not found.'); return; }
+  party.active = true; party.role = 'guest'; party.code = code;
+  party.clientId = genClientId(); party.ref = db.ref('rooms/' + code); party.playback = null;
+  registerPresence();
+  watchMembers();
+  party.ref.child('setup').on('value', s => applyRoomSetup(s.val()));
+  party.ref.child('playback').on('value', s => applyRoomPlayback(s.val()));
+  party.ref.child('meta').on('value', s => { if (party.active && isGuest() && !s.exists()) { toast('Host ended the party'); leaveParty(); } });
+  lockGuestUI(true);
+  setRoomHash(code);
+  updatePartyUI();
+  toast('Joined room ' + code);
+}
+
+function leaveParty() {
+  if (party.ref) {
+    try { party.ref.child('setup').off(); party.ref.child('playback').off(); party.ref.child('meta').off(); party.ref.child('members').off(); } catch (_) {}
+    try { party.meRef && party.meRef.remove(); } catch (_) {}
+    if (isHost()) { try { party.ref.remove(); } catch (_) {} }
+  }
+  party.active = false; party.role = null; party.code = null; party.ref = null; party.playback = null; party.meRef = null;
+  lockGuestUI(false);
+  setRoomHash(null);
+  updatePartyUI();
+}
+
+/* ---- Party UI ---- */
+function openPartyModal() { document.getElementById('partyOverlay').classList.add('active'); updatePartyUI(); }
+function closePartyModal() { document.getElementById('partyOverlay').classList.remove('active'); }
+function showPartyError(msg) { const el = document.getElementById('partyError'); if (el) el.textContent = msg || ''; }
+
+function updatePartyUI() {
+  const idle = document.getElementById('partyIdle');
+  const active = document.getElementById('partyActive');
+  const pill = document.getElementById('partyPill');
+  if (party.active) {
+    idle.style.display = 'none';
+    active.style.display = '';
+    document.getElementById('partyRoleLabel').textContent = isHost() ? 'Hosting room' : 'In room';
+    document.getElementById('partyCode').textContent = party.code;
+    document.getElementById('partyActiveNote').textContent = isHost()
+      ? 'Share the code or invite link. You control playback and POVs; everyone follows you.'
+      : 'The host controls playback and POVs. Sit back and watch in sync.';
+    pill.style.display = '';
+    pill.classList.toggle('guest', isGuest());
+    document.getElementById('partyPillText').textContent = (isHost() ? 'Hosting ' : 'Room ') + party.code;
+  } else {
+    idle.style.display = '';
+    active.style.display = 'none';
+    pill.style.display = 'none';
+    showPartyError(firebaseConfigured() ? '' : 'Firebase not configured yet — see firebase-config.js / README.');
+  }
+}
+
+function lockGuestUI(on) { document.body.classList.toggle('party-guest', !!on); }
+
+function setRoomHash(code) {
+  // Keep the share-state hash; add/remove a room param for invite links.
+  try {
+    const base = location.href.split('#')[0];
+    const stPart = (location.hash.match(/[#&]s=([^&]+)/) || [])[0] ? ('s=' + location.hash.match(/[#&]s=([^&]+)/)[1]) : '';
+    const parts = [];
+    if (stPart) parts.push(stPart);
+    if (code) parts.push('room=' + code);
+    history.replaceState(null, '', base + (parts.length ? '#' + parts.join('&') : ''));
+  } catch (_) {}
+}
+function roomFromHash() { const m = (location.hash || '').match(/[#&]room=(\d{6})/); return m ? m[1] : null; }
+
 /* ---------------- Wiring ---------------- */
 const urlInput = document.getElementById('urlInput');
-document.getElementById('addBtn').addEventListener('click', () => addVideo(urlInput.value));
-urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addVideo(urlInput.value); });
+document.getElementById('addBtn').addEventListener('click', () => { if (!isGuest()) addVideo(urlInput.value); });
+urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !isGuest()) addVideo(urlInput.value); });
 
 document.getElementById('playPause').addEventListener('click', togglePlay);
 document.getElementById('back5').addEventListener('click', () => skip(-5));
@@ -773,9 +1213,32 @@ document.getElementById('wizMp1').addEventListener('click', () => wizardNudge(-0
 document.getElementById('wizPp1').addEventListener('click', () => wizardNudge(0.1));
 document.getElementById('wizP1').addEventListener('click', () => wizardNudge(1));
 document.getElementById('wizPlayPause').addEventListener('click', wizardTogglePlay);
+(() => {
+  const scrub = document.getElementById('wizScrub');
+  const doSeek = () => {
+    const v = wizardList[wizardStep];
+    if (!v || !v.ready) return;
+    v.player.seek(parseFloat(scrub.value));
+    document.getElementById('wizTime').textContent = fmtTime2(parseFloat(scrub.value));
+  };
+  scrub.addEventListener('input', () => { wizScrubbing = true; doSeek(); });
+  scrub.addEventListener('change', () => { doSeek(); setTimeout(() => { wizScrubbing = false; }, 150); });
+})();
 document.getElementById('wizNext').addEventListener('click', wizardCaptureNext);
 document.getElementById('wizBack').addEventListener('click', wizardBack);
 document.getElementById('wizCancel').addEventListener('click', cancelWizard);
+
+// If a player iframe steals keyboard focus (e.g. YouTube focusing itself on
+// play), hand focus back to the page so Space/arrows keep working.
+window.addEventListener('blur', () => {
+  requestAnimationFrame(() => {
+    const ae = document.activeElement;
+    if (ae && ae.tagName === 'IFRAME' && ae.closest && ae.closest('.cell-video')) {
+      try { ae.blur(); } catch (_) {}
+      try { window.focus(); } catch (_) {}
+    }
+  });
+});
 
 document.addEventListener('keydown', (e) => {
   if (e.target === urlInput) return;
@@ -805,8 +1268,37 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+/* ---- Watch party wiring ---- */
+document.getElementById('partyBtn').addEventListener('click', openPartyModal);
+document.getElementById('partyPill').addEventListener('click', openPartyModal);
+document.getElementById('partyClose').addEventListener('click', closePartyModal);
+document.getElementById('partyOverlay').addEventListener('click', (e) => { if (e.target.id === 'partyOverlay') closePartyModal(); });
+document.getElementById('partyHostBtn').addEventListener('click', createRoom);
+document.getElementById('partyJoinBtn').addEventListener('click', () => joinRoom(document.getElementById('partyCodeInput').value));
+document.getElementById('partyCodeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') joinRoom(e.target.value); });
+document.getElementById('partyCodeInput').addEventListener('input', (e) => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 6); });
+document.getElementById('partyLeaveBtn').addEventListener('click', leaveParty);
+document.getElementById('partyCopyBtn').addEventListener('click', async () => {
+  setRoomHash(party.code);
+  try { await navigator.clipboard.writeText(location.href); toast('Invite link copied'); }
+  catch (_) { toast('Copy the link from your address bar'); }
+});
+
 /* Rebuild a shared setup from the URL, if present. */
 restoreFromUrl();
+updatePartyUI();
+
+/* If an invite link (#room=NNNNNN) was opened, prompt to join (the click is the
+   gesture browsers need to start playback with sound). */
+(() => {
+  const code = roomFromHash();
+  if (!code) return;
+  openPartyModal();
+  const input = document.getElementById('partyCodeInput');
+  input.value = code;
+  if (!firebaseConfigured()) showPartyError('This is a party invite, but Firebase is not configured here yet — see README.');
+  else showPartyError('Invite for room ' + code + ' — click Join to enter.');
+})();
 </script>
 </body>
 </html>

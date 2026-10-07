@@ -891,6 +891,7 @@ function showWizardStep() {
   const v = wizardList[wizardStep];
   if (!v) { finishWizard(); return; }
   wizScrubbing = false;
+  wizSeekTarget = null;
   setFocus(videos.indexOf(v));           // bring the current video into the big view
   const n = wizardList.length;
   document.getElementById('wizStep').textContent = 'Step ' + (wizardStep + 1) + ' / ' + n;
@@ -903,37 +904,63 @@ function showWizardStep() {
 }
 
 let wizScrubbing = false;
+let wizSeekTarget = null;   // where we last asked the player to seek to
+let wizSeekAt = 0;
+
+// Seek the focused wizard video and hold the UI at that target until the
+// player actually arrives there (a paused YouTube seek lands with a delay —
+// trusting getTime() too soon makes the scrubber snap back to the old spot).
+function wizApplySeek(t) {
+  const v = wizardList[wizardStep];
+  if (!v || !v.ready) return;
+  wizSeekTarget = Math.max(0, t);
+  wizSeekAt = performance.now();
+  v.player.seek(wizSeekTarget);
+  document.getElementById('wizScrub').value = wizSeekTarget;
+  document.getElementById('wizTime').textContent = fmtTime2(wizSeekTarget);
+}
+
 function updateWizardTime() {
   const v = wizardList[wizardStep];
   if (!v || !v.ready) return;
+  const scrub = document.getElementById('wizScrub');
+  const dur = v.player.getDuration();
+  if (dur > 0) scrub.max = dur.toFixed(2);
+  if (wizScrubbing) return;                 // user is dragging the handle
   const cur = v.player.getTime();
-  document.getElementById('wizTime').textContent = fmtTime2(cur);
-  if (!wizScrubbing) {
-    const scrub = document.getElementById('wizScrub');
-    const dur = v.player.getDuration();
-    if (dur > 0) scrub.max = dur.toFixed(2);
-    scrub.value = cur;
+  if (wizSeekTarget != null) {
+    // Still waiting for the seek to land — keep showing the target, don't snap back.
+    if (Math.abs(cur - wizSeekTarget) < 0.4 || performance.now() - wizSeekAt > 2500) {
+      wizSeekTarget = null;
+    } else {
+      return;
+    }
   }
+  document.getElementById('wizTime').textContent = fmtTime2(cur);
+  scrub.value = cur;
 }
 
 function wizardNudge(sec) {
   const v = wizardList[wizardStep];
   if (!v || !v.ready) return;
-  v.player.seek(Math.max(0, v.player.getTime() + sec));
-  setTimeout(updateWizardTime, 60);
+  // Accumulate from the pending target so rapid nudges add up correctly.
+  const base = (wizSeekTarget != null) ? wizSeekTarget : v.player.getTime();
+  wizApplySeek(base + sec);
 }
 
 function wizardTogglePlay() {
   const v = wizardList[wizardStep];
   if (!v || !v.ready) return;
-  v.player.isActivelyPlaying() ? v.player.pause() : v.player.play();
+  if (v.player.isActivelyPlaying()) { v.player.pause(); }
+  else { wizSeekTarget = null; v.player.play(); }   // playback takes over the clock
 }
 
 function wizardCaptureNext() {
   const v = wizardList[wizardStep];
   if (!v || !v.ready) return;
   v.player.pause();
-  wizardCaptures[wizardStep] = v.player.getTime();
+  // Capture the lined-up target if a seek is still landing, else the live time.
+  wizardCaptures[wizardStep] = (wizSeekTarget != null) ? wizSeekTarget : v.player.getTime();
   if (wizardStep < wizardList.length - 1) { wizardStep++; showWizardStep(); }
   else finishWizard();
 }
@@ -1215,14 +1242,14 @@ document.getElementById('wizP1').addEventListener('click', () => wizardNudge(1))
 document.getElementById('wizPlayPause').addEventListener('click', wizardTogglePlay);
 (() => {
   const scrub = document.getElementById('wizScrub');
-  const doSeek = () => {
+  // While dragging: scrub live. On release/click: commit via wizApplySeek, which
+  // holds the position until the player lands there (no snap-back).
+  scrub.addEventListener('input', () => {
+    wizScrubbing = true;
     const v = wizardList[wizardStep];
-    if (!v || !v.ready) return;
-    v.player.seek(parseFloat(scrub.value));
-    document.getElementById('wizTime').textContent = fmtTime2(parseFloat(scrub.value));
-  };
-  scrub.addEventListener('input', () => { wizScrubbing = true; doSeek(); });
-  scrub.addEventListener('change', () => { doSeek(); setTimeout(() => { wizScrubbing = false; }, 150); });
+    if (v && v.ready) { v.player.seek(Math.max(0, parseFloat(scrub.value))); document.getElementById('wizTime').textContent = fmtTime2(parseFloat(scrub.value)); }
+  });
+  scrub.addEventListener('change', () => { wizScrubbing = false; wizApplySeek(parseFloat(scrub.value)); });
 })();
 document.getElementById('wizNext').addEventListener('click', wizardCaptureNext);
 document.getElementById('wizBack').addEventListener('click', wizardBack);

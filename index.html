@@ -308,6 +308,7 @@
     <span><kbd>Space</kbd> Play / Pause</span>
     <span><kbd>←</kbd> <kbd>→</kbd> Skip ±5s</span>
     <span><kbd>Shift</kbd>+<kbd>←</kbd>/<kbd>→</kbd> ±1s</span>
+    <span><kbd>I</kbd> / <kbd>P</kbd> ±30s</span>
     <span><kbd>1</kbd>–<kbd>6</kbd> Focus that POV (+ its audio)</span>
     <span><kbd>0</kbd> Mute all</span>
     <span><kbd>R</kbd> Resync</span>
@@ -1669,6 +1670,8 @@ document.addEventListener('keydown', (e) => {
     case ' ': e.preventDefault(); togglePlay(); break;
     case 'ArrowLeft': e.preventDefault(); skip(-step); break;
     case 'ArrowRight': e.preventDefault(); skip(step); break;
+    case 'i': case 'I': skip(-30); break;
+    case 'p': case 'P': skip(30); break;
     case 'r': case 'R': resyncAll(); break;
     case '0': muteAll(); break;
     default:

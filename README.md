@@ -122,6 +122,7 @@ achievable over the internet and isn't needed for watching together.
 | `Space` | Play / pause all |
 | `←` / `→` | Skip ±5s |
 | `Shift`+`←`/`→` | Skip ±1s |
+| `I` / `P` | Skip back / forward 30s |
 | `1`–`6` | Focus that POV (and its audio) |
 | `0` | Mute all |
 | `R` | Force resync |
